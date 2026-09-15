@@ -16,3 +16,8 @@ wallet = "~/.config/solana/id.json"
 test = "pnpm exec ts-mocha -p ./tsconfig.json -t 1000000 \"tests/**/*.ts\""
 
 [hooks]
+
+# 仅影响本地集成测试，只要有新transaction则立即打包生成一个新的slot
+[surfpool]
+block_production_mode = "transaction"
+slot_time = 1

@@ -1,11 +1,18 @@
 {
   "license": "ISC",
   "scripts": {
+    "build:test-fast": "anchor build -- --features test-fast",
+    "build:localnet": "anchor build -- --features localnet",
+    "build:devnet": "anchor build -- --features devnet",
+    "test:test-fast": "anchor test -- --features test-fast",
+    "test-test-fast:zero": "CREATE_ROUND_ROLLOVER=zero anchor test -- --features test-fast",
+    "test-test-fast:payment-overflow": "PHASE2_BUY_MODE=payment-overflow anchor test -- --features test-fast",
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
   },
+  "type": "module",
   "dependencies": {
-    "@anchor-lang/core": "^1.1.2"
+    "@anchor-lang/core": "1.1.2"
   },
   "devDependencies": {
     "chai": "^4.3.4",

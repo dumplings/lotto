@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@anchor-lang/core':
-        specifier: ^1.1.2
-        version: 1.2.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
+        specifier: '=1.1.2'
+        version: 1.1.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
     devDependencies:
       '@types/bn.js':
         specifier: ^5.1.0
@@ -45,8 +45,8 @@ packages:
     peerDependencies:
       '@solana/web3.js': ^1.69.1
 
-  '@anchor-lang/core@1.2.0':
-    resolution: {integrity: sha512-GpHdhYnwVSEIvdZIeRCL7Q9LK0oTyoJ259r4mtc+a3W9oM3Iz6qezorzZcd92ASCJJ6MYqqdrM/b2JKDZpIzmw==}
+  '@anchor-lang/core@1.1.2':
+    resolution: {integrity: sha512-rUG9qzxoK1avDtwYBuufiwMm2t18nVt4eU9T35NT8ZzIZ2k9wbUgW9PQ9lEjteem2t/ozyfvjapsLj4algi4pA==}
     engines: {node: '>=20.18'}
 
   '@anchor-lang/errors@1.2.0':
@@ -718,7 +718,7 @@ snapshots:
       bn.js: 5.2.5
       buffer-layout: 1.2.2
 
-  '@anchor-lang/core@1.2.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)':
+  '@anchor-lang/core@1.1.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)':
     dependencies:
       '@anchor-lang/borsh': 1.2.0(@solana/web3.js@1.99.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6))
       '@anchor-lang/errors': 1.2.0
@@ -806,7 +806,7 @@ snapshots:
 
   '@types/connect@3.4.38':
     dependencies:
-      '@types/node': 12.20.55
+      '@types/node': 26.5.1
 
   '@types/json5@0.0.29':
     optional: true
@@ -823,7 +823,7 @@ snapshots:
 
   '@types/ws@7.4.7':
     dependencies:
-      '@types/node': 12.20.55
+      '@types/node': 26.5.1
 
   '@types/ws@8.18.1':
     dependencies:

@@ -18,10 +18,15 @@ idl-build = ["anchor-lang/idl-build"]
 anchor-debug = []
 custom-heap = []
 custom-panic = []
+localnet = []
+devnet = []
+test-fast = []
 
 
 [dependencies]
-anchor-lang = "1.1.2"
+anchor-lang = { version = "=1.1.2", features = ["init-if-needed"] }
+ephemeral-vrf-sdk = { version = "=0.17.0", default-features = false, features = ["anchor"] }
+solana-sha256-hasher = "=3.1.0"
 
 
 [lints.rust]
