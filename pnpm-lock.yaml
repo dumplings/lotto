@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       '@anchor-lang/core':
-        specifier: '=1.1.2'
+        specifier: 1.1.2
         version: 1.1.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)
     devDependencies:
       '@types/bn.js':

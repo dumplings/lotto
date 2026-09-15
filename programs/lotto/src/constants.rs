@@ -51,5 +51,5 @@ pub const ROLLOVER_VAULT_SEED: &[u8] = b"rollover_vault_seed";
 
 // 基点 https://www.ixopay.com/blog/what-is-a-basis-point-bps-and-how-is-it-calculated
 pub const BPS_DENOMINATOR: u32 = 10_000;
-
+pub const TIER_COUNT: usize = 3; // 奖级数
 pub const MAX_LEADING_ZERO_BITS: u16 = 256;

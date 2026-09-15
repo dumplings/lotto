@@ -5,10 +5,10 @@
     "build:localnet": "anchor build -- --features localnet",
     "build:devnet": "anchor build -- --features devnet",
     "test:test-fast": "anchor test -- --features test-fast",
-    "test-test-fast:zero": "CREATE_ROUND_ROLLOVER=zero anchor test -- --features test-fast",
-    "test-test-fast:payment-overflow": "PHASE2_BUY_MODE=payment-overflow anchor test -- --features test-fast",
+    "test-fast:zero": "CREATE_ROUND_ROLLOVER=zero anchor test -- --features test-fast",
+    "test-fast:payment-overflow": "PHASE2_BUY_MODE=payment-overflow anchor test -- --features test-fast",
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
-    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
+    "lint": "prettier \"**/*{.js,.ts}\" --check"
   },
   "type": "module",
   "dependencies": {
