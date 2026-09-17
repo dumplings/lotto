@@ -1,4 +1,5 @@
-use crate::constants::TIER_COUNT;
+use crate::constants::{BPS_DENOMINATOR, MAX_LEADING_ZERO_BITS, TIER_COUNT};
+use crate::error::LottoError;
 use anchor_lang::prelude::*;
 
 #[account]
@@ -12,6 +13,28 @@ pub struct LottoConfig {
     pub tier_thresholds: [u16; TIER_COUNT], // 判断中奖的阈值，分别对应三/二/一等奖
     pub tier_pool_bps: [u16; TIER_COUNT],   // 基点，总奖池占比
     pub bump: u8,
+}
+
+impl LottoConfig {
+    pub fn validate_economic_params(
+        ticket_price: u64,
+        tier_thresholds: &[u16; TIER_COUNT],
+        tier_pool_bps: &[u16; TIER_COUNT],
+    ) -> Result<()> {
+        require!(ticket_price > 0, LottoError::InvalidTicketPrice);
+
+        let thresholds_are_valid = tier_thresholds[0] > 0
+            && tier_thresholds
+                .iter()
+                .all(|threshold| *threshold <= MAX_LEADING_ZERO_BITS)
+            && tier_thresholds.windows(2).all(|pair| pair[0] < pair[1]);
+        require!(thresholds_are_valid, LottoError::InvalidTierThresholds);
+
+        let total_bps: u32 = tier_pool_bps.iter().map(|bps| u32::from(*bps)).sum();
+        require!(total_bps <= BPS_DENOMINATOR, LottoError::InvalidTierPoolBps);
+
+        Ok(())
+    }
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Copy, Clone, Debug, PartialEq, Eq, InitSpace)]
