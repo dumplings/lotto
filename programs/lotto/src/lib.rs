@@ -22,4 +22,12 @@ pub mod lotto {
     pub fn update_config(ctx: Context<UpdateConfig>, args: UpdateConfigArgs) -> Result<()> {
         handle_update_config(ctx, args)
     }
+
+    pub fn create_round(ctx: Context<CreateRound>) -> Result<()> {
+        handle_create_round(ctx)
+    }
+
+    pub fn buy_ticket(ctx: Context<BuyTicket>, quantity: u32) -> Result<()> {
+        handle_buy_ticket(ctx, quantity)
+    }
 }

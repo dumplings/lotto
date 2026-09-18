@@ -10,4 +10,14 @@ pub enum LottoError {
     InvalidTierPoolBps,
     #[msg("当前 signer 不是 Program upgrade authority，无权初始化 Config")]
     UnauthorizedInitializer,
+    #[msg("存在已激活 Round")]
+    ActiveRoundExists,
+    #[msg("Checked arithmetic operation failed")]
+    ArithmeticError,
+    #[msg("Ticket quantity 需大于 0")]
+    InvalidTicketQuantity,
+    #[msg("Round is not in Selling state")]
+    RoundNotSelling,
+    #[msg("售票已关闭")]
+    SaleClosed,
 }

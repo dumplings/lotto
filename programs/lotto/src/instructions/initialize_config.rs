@@ -29,7 +29,7 @@ pub struct InitializeConfig<'info> {
         init,
         payer = authority,
         space = 0,
-        owner = system_program.key(),
+        owner = System::id(),
         seeds = [ROLLOVER_VAULT_SEED],
         bump
     )]
