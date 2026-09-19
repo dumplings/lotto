@@ -20,4 +20,14 @@ pub enum LottoError {
     RoundNotSelling,
     #[msg("售票已关闭")]
     SaleClosed,
+    #[msg("当前仍处于销售期")]
+    SaleStillOpen,
+    #[msg("Randomness 状态已就位")]
+    RandomnessAlreadyReady,
+    #[msg("Round is not waiting for randomness")]
+    RoundNotRandomnessPending,
+    #[msg("Randomness has not been received yet")]
+    RandomnessNotReady,
+    #[msg("Randomness callback binding does not match the round")]
+    RandomnessBindingMismatch,
 }

@@ -8,6 +8,14 @@ declare const process: {
   getBuiltinModule(name: "fs"): {
     readFileSync(path: string, encoding: "utf8"): string;
   };
+  getBuiltinModule(name: "crypto"): {
+    createHash(algorithm: string): {
+      update(data: string | Buffer): {
+        digest(): Buffer;
+        digest(encoding: "hex"): string;
+      };
+    };
+  };
 };
 
 type RawIdlField = { name: string; type: unknown };
@@ -19,6 +27,7 @@ type RawIdl = {
   address: string;
   instructions: Array<{
     name: string;
+    discriminator: number[];
     accounts: Array<{
       name: string;
       address?: string;
@@ -45,17 +54,25 @@ type RpcConnection = {
 };
 
 const { readFileSync } = process.getBuiltinModule("fs");
+const { createHash } = process.getBuiltinModule("crypto");
 const rawIdl = JSON.parse(
   readFileSync("target/idl/lotto.json", "utf8")
 ) as RawIdl;
 
-describe("lotto Phase 0-2", function () {
+describe("lotto Phase 0-3", function () {
   this.timeout(60_000);
 
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
   const program = anchor.workspace.lotto as Program<Lotto>;
   const systemProgram = anchor.web3.SystemProgram.programId;
+  const slotHashes = anchor.web3.SYSVAR_SLOT_HASHES_PUBKEY;
+  const vrfProgram = new anchor.web3.PublicKey(
+    "Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz"
+  );
+  const vrfQueue = new anchor.web3.PublicKey(
+    "GKE6d7iv8kCBrsxr78W3xVdjGLLLJnxsGiuzrsZCGEvb"
+  );
   const upgradeableLoader = new anchor.web3.PublicKey(
     "BPFLoaderUpgradeab1e11111111111111111111111"
   );
@@ -74,6 +91,14 @@ describe("lotto Phase 0-2", function () {
   const substitutedProgramData = anchor.web3.Keypair.generate().publicKey;
   const unauthorizedInitializer = anchor.web3.Keypair.generate();
   const unauthorizedUpdater = anchor.web3.Keypair.generate();
+  const [requestProgramIdentity] = anchor.web3.PublicKey.findProgramAddressSync(
+    [Buffer.from("identity")],
+    program.programId
+  );
+  const [scopedVrfIdentity] = anchor.web3.PublicKey.findProgramAddressSync(
+    [Buffer.from("identity"), program.programId.toBuffer()],
+    vrfProgram
+  );
 
   const validInitializeArgs = {
     ticketPrice: new anchor.BN(1_000_000),
@@ -230,7 +255,7 @@ describe("lotto Phase 0-2", function () {
   });
 
   describe("generated ABI", () => {
-    it("pins the reconstruction Program ID and only the Phase 1-2 instructions", () => {
+    it("pins the reconstruction Program ID and only the Phase 1-3 instructions", () => {
       expect(program.programId.toBase58()).to.equal(
         "6pZAWE597dHz1YHqRmDdo6MMPK13BFzFLHJY9XWsmJsm"
       );
@@ -239,12 +264,18 @@ describe("lotto Phase 0-2", function () {
         "buy_ticket",
         "create_round",
         "initialize_config",
+        "receive_randomness",
+        "request_randomness",
+        "settle_randomness",
         "update_config",
       ]);
       expect(program.idl.instructions.map(({ name }) => name)).to.deep.equal([
         "buyTicket",
         "createRound",
         "initializeConfig",
+        "receiveRandomness",
+        "requestRandomness",
+        "settleRandomness",
         "updateConfig",
       ]);
     });
@@ -321,7 +352,7 @@ describe("lotto Phase 0-2", function () {
       ]);
     });
 
-    it("keeps the Phase 1 error ABI unchanged and pins the Phase 2 append", () => {
+    it("keeps the Phase 0-2 error ABI unchanged and pins the Phase 3 append", () => {
       expect(rawIdl.errors?.slice(0, 4)).to.deep.equal([
         {
           code: 6000,
@@ -344,7 +375,7 @@ describe("lotto Phase 0-2", function () {
           msg: "当前 signer 不是 Program upgrade authority，无权初始化 Config",
         },
       ]);
-      expect(rawIdl.errors?.slice(4)).to.deep.equal([
+      expect(rawIdl.errors?.slice(4, 9)).to.deep.equal([
         {
           code: 6004,
           name: "ActiveRoundExists",
@@ -367,6 +398,175 @@ describe("lotto Phase 0-2", function () {
         },
         { code: 6008, name: "SaleClosed", msg: "售票已关闭" },
       ]);
+      expect(rawIdl.errors?.slice(9)).to.deep.equal([
+        { code: 6009, name: "SaleStillOpen", msg: "当前仍处于销售期" },
+        {
+          code: 6010,
+          name: "RandomnessAlreadyReady",
+          msg: "Randomness 状态已就位",
+        },
+        {
+          code: 6011,
+          name: "RoundNotRandomnessPending",
+          msg: "Round is not waiting for randomness",
+        },
+        {
+          code: 6012,
+          name: "RandomnessNotReady",
+          msg: "Randomness has not been received yet",
+        },
+        {
+          code: 6013,
+          name: "RandomnessBindingMismatch",
+          msg: "Randomness callback binding does not match the round",
+        },
+      ]);
+    });
+
+    it("pins Phase 3 discriminators, account order, and framework metadata", () => {
+      const instruction = (name: string) =>
+        rawIdl.instructions.find((item) => item.name === name)!;
+      const expectedDiscriminator = (name: string) =>
+        Array.from(
+          createHash("sha256").update(`global:${name}`).digest().subarray(0, 8)
+        );
+      const receive = instruction("receive_randomness");
+      const request = instruction("request_randomness");
+      const settle = instruction("settle_randomness");
+
+      expect(receive.discriminator).to.deep.equal(
+        expectedDiscriminator("receive_randomness")
+      );
+      expect(request.discriminator).to.deep.equal(
+        expectedDiscriminator("request_randomness")
+      );
+      expect(settle.discriminator).to.deep.equal(
+        expectedDiscriminator("settle_randomness")
+      );
+
+      expect(receive.accounts.map(({ name }) => name)).to.deep.equal([
+        "vrf_program_identity",
+        "round",
+      ]);
+      expect(receive.accounts[0].signer).to.equal(true);
+      expect(receive.accounts[0].writable).not.to.equal(true);
+      expect(receive.accounts[1].signer).not.to.equal(true);
+      expect(receive.accounts[1].writable).to.equal(true);
+      expect(receive.accounts[1].pda).not.to.equal(undefined);
+      expect(receive.args).to.deep.equal([
+        { name: "randomness", type: { array: ["u8", 32] } },
+        { name: "binding", type: { array: ["u8", 32] } },
+      ]);
+
+      expect(request.accounts.map(({ name }) => name)).to.deep.equal([
+        "authority",
+        "config",
+        "round",
+        "oracle_queue",
+        "program_identity",
+        "vrf_program",
+        "slot_hashes",
+        "system_program",
+      ]);
+      expect(request.accounts[0]).to.include({ writable: true, signer: true });
+      expect(request.accounts[0].relations).to.deep.equal(["config"]);
+      expect(request.accounts[1].pda).not.to.equal(undefined);
+      expect(request.accounts[1].writable).not.to.equal(true);
+      expect(request.accounts[2]).to.include({ writable: true });
+      expect(request.accounts[2].pda).not.to.equal(undefined);
+      expect(request.accounts[3]).to.include({
+        address: vrfQueue.toBase58(),
+        writable: true,
+      });
+      expect(request.accounts[4].pda).not.to.equal(undefined);
+      expect(request.accounts[5].address).to.equal(vrfProgram.toBase58());
+      expect(request.accounts[6].address).to.equal(slotHashes.toBase58());
+      expect(request.accounts[7].address).to.equal(systemProgram.toBase58());
+      expect(request.args).to.deep.equal([]);
+
+      expect(settle.accounts.map(({ name }) => name)).to.deep.equal([
+        "authority",
+        "config",
+        "round",
+      ]);
+      expect(settle.accounts[0].signer).to.equal(true);
+      expect(settle.accounts[0].relations).to.deep.equal(["config"]);
+      expect(settle.accounts[1].pda).not.to.equal(undefined);
+      expect(settle.accounts[2]).to.include({ writable: true });
+      expect(settle.accounts[2].pda).not.to.equal(undefined);
+      expect(settle.args).to.deep.equal([]);
+    });
+
+    it("pins independent binding, identity PDA, and callback encoding vectors", async () => {
+      const u64Le = (value: number) => {
+        return new anchor.BN(value).toArrayLike(Buffer, "le", 8);
+      };
+      const roundPda = (roundId: number) =>
+        anchor.web3.PublicKey.findProgramAddressSync(
+          [Buffer.from("round"), u64Le(roundId)],
+          program.programId
+        )[0];
+      const deriveBinding = (round: anchor.web3.PublicKey) =>
+        createHash("sha256")
+          .update(
+            Buffer.concat([
+              Buffer.from("solana_lottery:randomness:v1"),
+              program.programId.toBuffer(),
+              round.toBuffer(),
+            ])
+          )
+          .digest("hex");
+      const roundZero = roundPda(0);
+      const roundOne = roundPda(1);
+
+      expect(roundZero.toBase58()).to.equal(
+        "j8fXgS1jUdhSiTNvRKzmBMp8NYj2mf8ifaDTPXYXW5Y"
+      );
+      expect(roundOne.toBase58()).to.equal(
+        "14ifBYDhv6xyVNYCNxZd9Aq2rNsWJQbJiENEaaMa5vnA"
+      );
+      expect(deriveBinding(roundZero)).to.equal(
+        "0a8eb450257ae1878c891c1f5626e91782ae80567a631ca47582fd668ba5c155"
+      );
+      expect(deriveBinding(roundOne)).to.equal(
+        "a5abd7491dd57f2f199d17656266abcbc442f3ad89a86699de925cf26587097c"
+      );
+      expect(requestProgramIdentity.toBase58()).to.equal(
+        "27GRSHafNFC1SiMpaFvptBEt1oZwk47cmRZycv17kkdz"
+      );
+      expect(scopedVrfIdentity.toBase58()).to.equal(
+        "Fo9xSnyVhj76XejePxnNc33p4xCzAiLDiMo2FvkzANaL"
+      );
+
+      const randomness = Array.from({ length: 32 }, (_, index) => index);
+      const binding = Array.from({ length: 32 }, (_, index) => 255 - index);
+      const callback = await program.methods
+        .receiveRandomness(randomness, binding)
+        .accountsStrict({
+          vrfProgramIdentity: scopedVrfIdentity,
+          round: roundZero,
+        })
+        .instruction();
+      expect(callback.keys).to.have.length(2);
+      expect(callback.keys[0]).to.deep.include({
+        isSigner: true,
+        isWritable: false,
+      });
+      expect(callback.keys[0].pubkey.equals(scopedVrfIdentity)).to.equal(true);
+      expect(callback.keys[1]).to.deep.include({
+        isSigner: false,
+        isWritable: true,
+      });
+      expect(callback.keys[1].pubkey.equals(roundZero)).to.equal(true);
+      expect(callback.data).to.have.length(8 + 32 + 32);
+      expect(Array.from(callback.data.subarray(0, 8))).to.deep.equal(
+        rawIdl.instructions.find(({ name }) => name === "receive_randomness")!
+          .discriminator
+      );
+      expect(callback.data.subarray(8, 40)).to.deep.equal(
+        Buffer.from(randomness)
+      );
+      expect(callback.data.subarray(40)).to.deep.equal(Buffer.from(binding));
     });
 
     it("pins Phase 2 account layouts without reference-schema residue", () => {
@@ -1430,6 +1630,570 @@ describe("lotto Phase 0-2", function () {
         expect(
           await snapshot([ticketPda(zeroBuyer.publicKey).ticket])
         ).to.deep.equal([null]);
+      });
+    });
+
+    describe("Phase 3 VRF lifecycle", function () {
+      const callbackRandomness = Array.from(
+        { length: 32 },
+        (_, index) => index + 1
+      );
+      const callbackBinding = Array.from(
+        { length: 32 },
+        (_, index) => 255 - index
+      );
+
+      function requestAccounts(
+        overrides: Partial<{
+          authority: anchor.web3.PublicKey;
+          config: anchor.web3.PublicKey;
+          round: anchor.web3.PublicKey;
+          oracleQueue: anchor.web3.PublicKey;
+          programIdentity: anchor.web3.PublicKey;
+          vrfProgram: anchor.web3.PublicKey;
+          slotHashes: anchor.web3.PublicKey;
+          systemProgram: anchor.web3.PublicKey;
+        }> = {}
+      ) {
+        return {
+          authority: provider.wallet.publicKey,
+          config,
+          round: activeRound,
+          oracleQueue: vrfQueue,
+          programIdentity: requestProgramIdentity,
+          vrfProgram,
+          slotHashes,
+          systemProgram,
+          ...overrides,
+        };
+      }
+
+      function settleAccounts(
+        overrides: Partial<{
+          authority: anchor.web3.PublicKey;
+          config: anchor.web3.PublicKey;
+          round: anchor.web3.PublicKey;
+        }> = {}
+      ) {
+        return {
+          authority: provider.wallet.publicKey,
+          config,
+          round: activeRound,
+          ...overrides,
+        };
+      }
+
+      async function withActiveRoundFixture(
+        overrides: Record<string, unknown>,
+        operation: () => Promise<void>
+      ) {
+        const info = await provider.connection.getAccountInfo(
+          activeRound,
+          "confirmed"
+        );
+        const current = await program.account.round.fetch(
+          activeRound,
+          "confirmed"
+        );
+        const encoded = await program.coder.accounts.encode("round", {
+          ...current,
+          ...overrides,
+        } as never);
+        await setAccount(activeRound, {
+          lamports: info!.lamports,
+          data: encoded,
+          owner: info!.owner,
+          executable: false,
+        });
+        try {
+          await operation();
+        } finally {
+          await setAccount(activeRound, {
+            lamports: info!.lamports,
+            data: info!.data,
+            owner: info!.owner,
+            executable: false,
+          });
+        }
+      }
+
+      function expectedActiveBinding() {
+        return createHash("sha256")
+          .update(
+            Buffer.concat([
+              Buffer.from("solana_lottery:randomness:v1"),
+              program.programId.toBuffer(),
+              activeRound.toBuffer(),
+            ])
+          )
+          .digest();
+      }
+
+      it("rejects user- and Authority-signed direct callbacks at the scoped identity constraint", async () => {
+        for (const [identity, signers] of [
+          [playerA.publicKey, [playerA]],
+          [provider.wallet.publicKey, []],
+        ] as const) {
+          const transaction = await program.methods
+            .receiveRandomness(callbackRandomness, callbackBinding)
+            .accountsStrict({
+              vrfProgramIdentity: identity,
+              round: activeRound,
+            })
+            .transaction();
+          await expectRejectedWithoutChanges(
+            transaction,
+            "ConstraintAddress",
+            [config, activeRound, activePrizeVault, rolloverVault],
+            [...signers]
+          );
+        }
+      });
+
+      it("rejects the correct scoped callback identity when it is not a signer", async () => {
+        const instruction = await program.methods
+          .receiveRandomness(callbackRandomness, callbackBinding)
+          .accountsStrict({
+            vrfProgramIdentity: scopedVrfIdentity,
+            round: activeRound,
+          })
+          .instruction();
+        instruction.keys[0].isSigner = false;
+        await expectRejectedWithoutChanges(
+          new anchor.web3.Transaction().add(instruction),
+          "AccountNotSigner",
+          [config, activeRound, activePrizeVault, rolloverVault]
+        );
+      });
+
+      it("rejects settle from Selling before readiness without lifecycle mutation", async () => {
+        await expectRejectedWithoutChanges(
+          await program.methods
+            .settleRandomness()
+            .accountsStrict(settleAccounts())
+            .transaction(),
+          "RoundNotRandomnessPending",
+          [config, activeRound, activePrizeVault, rolloverVault]
+        );
+      });
+
+      it("documents the bare-Surfpool request boundary before handler execution", async () => {
+        const authorityBefore = await provider.connection.getBalance(
+          provider.wallet.publicKey,
+          "confirmed"
+        );
+        const transaction = await program.methods
+          .requestRandomness()
+          .accountsStrict(requestAccounts())
+          .transaction();
+        const receipt = await expectRejectedWithoutChanges(
+          transaction,
+          "InvalidProgramExecutable",
+          [config, activeRound, activePrizeVault, rolloverVault]
+        );
+        expect(
+          (receipt.meta!.logMessages ?? []).some((line) =>
+            line.includes(`Program ${vrfProgram.toBase58()} invoke`)
+          )
+        ).to.equal(false);
+        const authorityAfter = await provider.connection.getBalance(
+          provider.wallet.publicKey,
+          "confirmed"
+        );
+        expect(authorityBefore - authorityAfter).to.equal(receipt.meta!.fee);
+      });
+
+      describe("fixture-assisted request-side validation", function () {
+        before(async () => {
+          // This only makes the fixed VRF address executable enough to reach
+          // handler/CPI paths. It is not a MagicBlock provider or callback E2E.
+          const lottoExecutable = await provider.connection.getAccountInfo(
+            program.programId,
+            "confirmed"
+          );
+          expect(lottoExecutable).not.to.equal(null);
+          await setAccount(vrfProgram, {
+            lamports: lottoExecutable!.lamports,
+            data: lottoExecutable!.data,
+            owner: lottoExecutable!.owner,
+            executable: true,
+          });
+        });
+
+        it("rejects a non-Config authority and wrong queue with framework errors", async () => {
+          await expectRejectedWithoutChanges(
+            await program.methods
+              .requestRandomness()
+              .accountsStrict(requestAccounts({ authority: playerA.publicKey }))
+              .transaction(),
+            "ConstraintHasOne",
+            [config, activeRound, activePrizeVault, rolloverVault],
+            [playerA]
+          );
+          await expectRejectedWithoutChanges(
+            await program.methods
+              .requestRandomness()
+              .accountsStrict(
+                requestAccounts({ oracleQueue: substituteSystemAccount })
+              )
+              .transaction(),
+            "ConstraintAddress",
+            [config, activeRound, activePrizeVault, rolloverVault]
+          );
+        });
+
+        it("rejects a canonical inactive Round with framework ConstraintRaw", async () => {
+          const inactiveRoundId = activeRoundId.add(new anchor.BN(1));
+          const inactive = roundPdas(inactiveRoundId);
+          const activeInfo = await provider.connection.getAccountInfo(
+            activeRound,
+            "confirmed"
+          );
+          const active = await program.account.round.fetch(
+            activeRound,
+            "confirmed"
+          );
+          const encoded = await program.coder.accounts.encode("round", {
+            ...active,
+            roundId: inactiveRoundId,
+            bump: inactive.roundBump,
+          } as never);
+          await setAccount(inactive.round, {
+            lamports: activeInfo!.lamports,
+            data: encoded,
+            owner: program.programId,
+            executable: false,
+          });
+
+          await expectRejectedWithoutChanges(
+            await program.methods
+              .requestRandomness()
+              .accountsStrict(requestAccounts({ round: inactive.round }))
+              .transaction(),
+            "ConstraintRaw",
+            [config, activeRound, inactive.round, activePrizeVault]
+          );
+          await expectRejectedWithoutChanges(
+            await program.methods
+              .settleRandomness()
+              .accountsStrict(settleAccounts({ round: inactive.round }))
+              .transaction(),
+            "ConstraintRaw",
+            [config, activeRound, inactive.round, activePrizeVault]
+          );
+        });
+
+        it("uses the transition boundary now >= sale_deadline", async () => {
+          const now = await chainTimestamp();
+          await withActiveRoundFixture(
+            {
+              status: { selling: {} },
+              randomnessReady: false,
+              saleDeadline: now.add(new anchor.BN(100)),
+            },
+            async () => {
+              await expectRejectedWithoutChanges(
+                await program.methods
+                  .requestRandomness()
+                  .accountsStrict(requestAccounts())
+                  .transaction(),
+                "SaleStillOpen",
+                [config, activeRound, activePrizeVault, rolloverVault]
+              );
+            }
+          );
+        });
+
+        it("rejects request after the Round has left Selling", async () => {
+          await withActiveRoundFixture(
+            {
+              status: { randomnessPending: {} },
+              randomnessReady: false,
+            },
+            async () => {
+              await expectRejectedWithoutChanges(
+                await program.methods
+                  .requestRandomness()
+                  .accountsStrict(requestAccounts())
+                  .transaction(),
+                "RoundNotSelling",
+                [config, activeRound, activePrizeVault, rolloverVault]
+              );
+            }
+          );
+        });
+
+        it("emits SDK 0.17.0 scoped request bytes and rolls back all state when the CPI fails", async () => {
+          const watched = [
+            config,
+            activeRound,
+            activePrizeVault,
+            rolloverVault,
+          ];
+          const before = await snapshot(watched);
+          const authorityBefore = await provider.connection.getBalance(
+            provider.wallet.publicKey,
+            "confirmed"
+          );
+          const receipt = await submitRecorded(
+            await program.methods
+              .requestRandomness()
+              .accountsStrict(requestAccounts())
+              .transaction()
+          );
+          expect(receipt.meta!.err).not.to.equal(null);
+          expect(await snapshot(watched)).to.deep.equal(before);
+          const authorityAfter = await provider.connection.getBalance(
+            provider.wallet.publicKey,
+            "confirmed"
+          );
+          expect(authorityBefore - authorityAfter).to.equal(receipt.meta!.fee);
+          expect(
+            (receipt.meta!.logMessages ?? []).some((line) =>
+              line.includes(`Program ${vrfProgram.toBase58()} invoke`)
+            )
+          ).to.equal(true);
+
+          const inner = receipt
+            .meta!.innerInstructions?.flatMap(
+              ({ instructions }) => instructions
+            )
+            .find((candidate) => "data" in candidate) as
+            | { data: string }
+            | undefined;
+          expect(inner).not.to.equal(undefined);
+          const data = Buffer.from(anchor.utils.bytes.bs58.decode(inner!.data));
+          expect(data.subarray(0, 8)).to.deep.equal(
+            Buffer.from([10, 0, 0, 0, 0, 0, 0, 0])
+          );
+          let offset = 8;
+          const callerSeed = data.subarray(offset, (offset += 32));
+          const callbackProgram = new anchor.web3.PublicKey(
+            data.subarray(offset, (offset += 32))
+          );
+          const discriminatorLength = data.readUInt32LE(offset);
+          offset += 4;
+          const callbackDiscriminator = data.subarray(
+            offset,
+            (offset += discriminatorLength)
+          );
+          const callbackAccountCount = data.readUInt32LE(offset);
+          offset += 4;
+          expect(callbackAccountCount).to.equal(1);
+          const callbackRound = new anchor.web3.PublicKey(
+            data.subarray(offset, (offset += 32))
+          );
+          const callbackRoundSigner = data[offset++];
+          const callbackRoundWritable = data[offset++];
+          const callbackArgsLength = data.readUInt32LE(offset);
+          offset += 4;
+          const callbackArgs = data.subarray(
+            offset,
+            (offset += callbackArgsLength)
+          );
+
+          expect(callerSeed).to.deep.equal(expectedActiveBinding());
+          expect(callbackProgram.equals(program.programId)).to.equal(true);
+          expect(callbackDiscriminator).to.deep.equal(
+            Buffer.from(
+              rawIdl.instructions.find(
+                ({ name }) => name === "receive_randomness"
+              )!.discriminator
+            )
+          );
+          expect(callbackRound.equals(activeRound)).to.equal(true);
+          expect(callbackRoundSigner).to.equal(0);
+          expect(callbackRoundWritable).to.equal(1);
+          expect(callbackArgsLength).to.equal(32);
+          expect(callbackArgs).to.deep.equal(expectedActiveBinding());
+          expect(offset).to.equal(data.length);
+        });
+      });
+
+      describe("fixture-assisted settle lifecycle", function () {
+        it("rejects a non-Config authority with ConstraintHasOne", async () => {
+          await expectRejectedWithoutChanges(
+            await program.methods
+              .settleRandomness()
+              .accountsStrict(settleAccounts({ authority: playerA.publicKey }))
+              .transaction(),
+            "ConstraintHasOne",
+            [config, activeRound, activePrizeVault, rolloverVault],
+            [playerA]
+          );
+        });
+
+        it("rejects RandomnessPending while randomness is not ready", async () => {
+          await withActiveRoundFixture(
+            {
+              status: { randomnessPending: {} },
+              randomnessReady: false,
+              registrationDeadline: new anchor.BN(0),
+            },
+            async () => {
+              await expectRejectedWithoutChanges(
+                await program.methods
+                  .settleRandomness()
+                  .accountsStrict(settleAccounts())
+                  .transaction(),
+                "RandomnessNotReady",
+                [config, activeRound, activePrizeVault, rolloverVault]
+              );
+            }
+          );
+        });
+
+        it("opens a complete registration window from settle time and preserves VRF state", async () => {
+          const fixtureNow = await chainTimestamp();
+          const binding = Array.from(expectedActiveBinding());
+          await withActiveRoundFixture(
+            {
+              status: { randomnessPending: {} },
+              randomnessBinding: binding,
+              randomnessRequestedAt: fixtureNow.sub(new anchor.BN(20)),
+              randomnessReceivedAt: fixtureNow.sub(new anchor.BN(10)),
+              randomnessReady: true,
+              randomness: callbackRandomness,
+              registrationDeadline: new anchor.BN(0),
+            },
+            async () => {
+              const beforeTime = await chainTimestamp();
+              const receipt = await submitRecorded(
+                await program.methods
+                  .settleRandomness()
+                  .accountsStrict(settleAccounts())
+                  .transaction()
+              );
+              expect(
+                receipt.meta!.err,
+                receipt.meta!.logMessages?.join("\n")
+              ).to.equal(null);
+              const afterTime = await chainTimestamp();
+              const settled = await program.account.round.fetch(activeRound);
+              const openedAt = settled.registrationDeadline.sub(
+                settled.registrationDurationSecs
+              );
+              expect(
+                openedAt.gte(beforeTime) && openedAt.lte(afterTime)
+              ).to.equal(true);
+              expect(settled.status).to.deep.equal({ registering: {} });
+              expect(settled.randomnessReady).to.equal(true);
+              expect(Array.from(settled.randomnessBinding)).to.deep.equal(
+                binding
+              );
+              expect(Array.from(settled.randomness)).to.deep.equal(
+                callbackRandomness
+              );
+              expect(
+                settled.randomnessRequestedAt.eq(
+                  fixtureNow.sub(new anchor.BN(20))
+                )
+              ).to.equal(true);
+              expect(
+                settled.randomnessReceivedAt.eq(
+                  fixtureNow.sub(new anchor.BN(10))
+                )
+              ).to.equal(true);
+            }
+          );
+        });
+
+        it("uses ArithmeticError for registration deadline overflow", async () => {
+          await withActiveRoundFixture(
+            {
+              status: { randomnessPending: {} },
+              randomnessReady: true,
+              registrationDurationSecs: new anchor.BN("9223372036854775807"),
+            },
+            async () => {
+              await expectRejectedWithoutChanges(
+                await program.methods
+                  .settleRandomness()
+                  .accountsStrict(settleAccounts())
+                  .transaction(),
+                "ArithmeticError",
+                [config, activeRound, activePrizeVault, rolloverVault]
+              );
+            }
+          );
+        });
+
+        it("rejects repeat settle and cannot extend the registration deadline", async () => {
+          await withActiveRoundFixture(
+            {
+              status: { randomnessPending: {} },
+              randomnessReady: true,
+              registrationDeadline: new anchor.BN(0),
+            },
+            async () => {
+              const first = await submitRecorded(
+                await program.methods
+                  .settleRandomness()
+                  .accountsStrict(settleAccounts())
+                  .transaction()
+              );
+              expect(first.meta!.err).to.equal(null);
+              const beforeRepeat = await snapshot([
+                config,
+                activeRound,
+                activePrizeVault,
+                rolloverVault,
+              ]);
+              await expectRejectedWithoutChanges(
+                await program.methods
+                  .settleRandomness()
+                  .accountsStrict(settleAccounts())
+                  .transaction(),
+                "RoundNotRandomnessPending",
+                [config, activeRound, activePrizeVault, rolloverVault]
+              );
+              expect(
+                await snapshot([
+                  config,
+                  activeRound,
+                  activePrizeVault,
+                  rolloverVault,
+                ])
+              ).to.deep.equal(beforeRepeat);
+            }
+          );
+        });
+
+        it("rolls back a successful settle when a later instruction fails", async () => {
+          await withActiveRoundFixture(
+            {
+              status: { randomnessPending: {} },
+              randomnessReady: true,
+              registrationDeadline: new anchor.BN(0),
+            },
+            async () => {
+              const watched = [
+                config,
+                activeRound,
+                activePrizeVault,
+                rolloverVault,
+              ];
+              const before = await snapshot(watched);
+              const transaction = await program.methods
+                .settleRandomness()
+                .accountsStrict(settleAccounts())
+                .postInstructions([
+                  anchor.web3.SystemProgram.transfer({
+                    fromPubkey: provider.wallet.publicKey,
+                    toPubkey: rolloverVault,
+                    lamports: Number.MAX_SAFE_INTEGER,
+                  }),
+                ])
+                .transaction();
+              const receipt = await submitRecorded(transaction);
+              expect(receipt.meta!.err).not.to.equal(null);
+              expect(receipt.meta!.logMessages).to.include(
+                `Program ${program.programId.toBase58()} success`
+              );
+              expect(await snapshot(watched)).to.deep.equal(before);
+            }
+          );
+        });
       });
     });
   });

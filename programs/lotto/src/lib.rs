@@ -30,4 +30,20 @@ pub mod lotto {
     pub fn buy_ticket(ctx: Context<BuyTicket>, quantity: u32) -> Result<()> {
         handle_buy_ticket(ctx, quantity)
     }
+
+    pub fn receive_randomness(
+        ctx: Context<ReceiveRandomness>,
+        randomness: [u8; 32],
+        binding: [u8; 32],
+    ) -> Result<()> {
+        handle_receive_randomness(ctx, randomness, binding)
+    }
+
+    pub fn request_randomness(ctx: Context<RequestRandomness>) -> Result<()> {
+        handle_request_randomness(ctx)
+    }
+
+    pub fn settle_randomness(ctx: Context<SettleRandomness>) -> Result<()> {
+        handle_settle_randomness(ctx)
+    }
 }
