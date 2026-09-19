@@ -30,4 +30,10 @@ pub enum LottoError {
     RandomnessNotReady,
     #[msg("Randomness callback binding does not match the round")]
     RandomnessBindingMismatch,
+    #[msg("Round is not in registration phase")]
+    RoundNotRegistering,
+    #[msg("Registration window is closed")]
+    RegistrationClosed,
+    #[msg("Ticket has already been registered")]
+    TicketAlreadyRegistered,
 }

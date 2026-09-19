@@ -27,7 +27,6 @@ pub struct SettleRandomness<'info> {
 }
 
 pub fn handle_settle_randomness(ctx: Context<SettleRandomness>) -> Result<()> {
-    let config = &ctx.accounts.config;
     let round = &mut ctx.accounts.round;
 
     require!(

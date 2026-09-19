@@ -7,7 +7,7 @@ use ephemeral_vrf_sdk::instructions::{create_request_randomness_ix, RequestRando
 use ephemeral_vrf_sdk::types::SerializableAccountMeta;
 use solana_sha256_hasher::hashv;
 
-const RANDOMNESS_BINDING_DOMAIN: &[u8] = b"solana_lottery:randomness:v1";
+const RANDOMNESS_BINDING_DOMAIN: &[u8] = b"solana_lotto:randomness:v1";
 
 fn derive_randomness_binding(program_id: &Pubkey, round: &Pubkey) -> [u8; 32] {
     hashv(&[

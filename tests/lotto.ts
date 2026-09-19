@@ -59,7 +59,44 @@ const rawIdl = JSON.parse(
   readFileSync("target/idl/lotto.json", "utf8")
 ) as RawIdl;
 
-describe("lotto Phase 0-3", function () {
+const ticketRandomnessDomain = Buffer.from("solana_lotto:ticket:v1");
+
+function countLeadingZeroBits(hash: Buffer): number {
+  let total = 0;
+  for (const byte of hash) {
+    if (byte === 0) {
+      total += 8;
+      continue;
+    }
+    total += Math.clz32(byte) - 24;
+    break;
+  }
+  return total;
+}
+
+function deriveTicketHash(
+  randomness: Buffer,
+  ticket: anchor.web3.PublicKey
+): Buffer {
+  expect(randomness.length).to.equal(32);
+  return createHash("sha256")
+    .update(
+      Buffer.concat([ticketRandomnessDomain, randomness, ticket.toBuffer()])
+    )
+    .digest();
+}
+
+function mapScoreToTier(
+  score: number,
+  thresholds: readonly [number, number, number]
+): "tier0" | "tier1" | "tier2" | null {
+  if (score >= thresholds[2]) return "tier2";
+  if (score >= thresholds[1]) return "tier1";
+  if (score >= thresholds[0]) return "tier0";
+  return null;
+}
+
+describe("lotto Phase 0-4", function () {
   this.timeout(60_000);
 
   const provider = anchor.AnchorProvider.env();
@@ -255,7 +292,7 @@ describe("lotto Phase 0-3", function () {
   });
 
   describe("generated ABI", () => {
-    it("pins the reconstruction Program ID and only the Phase 1-3 instructions", () => {
+    it("pins the reconstruction Program ID and only the Phase 1-4 instructions", () => {
       expect(program.programId.toBase58()).to.equal(
         "6pZAWE597dHz1YHqRmDdo6MMPK13BFzFLHJY9XWsmJsm"
       );
@@ -265,6 +302,7 @@ describe("lotto Phase 0-3", function () {
         "create_round",
         "initialize_config",
         "receive_randomness",
+        "register_winner",
         "request_randomness",
         "settle_randomness",
         "update_config",
@@ -274,6 +312,7 @@ describe("lotto Phase 0-3", function () {
         "createRound",
         "initializeConfig",
         "receiveRandomness",
+        "registerWinner",
         "requestRandomness",
         "settleRandomness",
         "updateConfig",
@@ -398,7 +437,7 @@ describe("lotto Phase 0-3", function () {
         },
         { code: 6008, name: "SaleClosed", msg: "售票已关闭" },
       ]);
-      expect(rawIdl.errors?.slice(9)).to.deep.equal([
+      expect(rawIdl.errors?.slice(9, 14)).to.deep.equal([
         { code: 6009, name: "SaleStillOpen", msg: "当前仍处于销售期" },
         {
           code: 6010,
@@ -421,6 +460,29 @@ describe("lotto Phase 0-3", function () {
           msg: "Randomness callback binding does not match the round",
         },
       ]);
+    });
+
+    it("pins only the three reachable Phase 4 domain errors", () => {
+      expect(rawIdl.errors?.slice(14)).to.deep.equal([
+        {
+          code: 6014,
+          name: "RoundNotRegistering",
+          msg: "Round is not in registration phase",
+        },
+        {
+          code: 6015,
+          name: "RegistrationClosed",
+          msg: "Registration window is closed",
+        },
+        {
+          code: 6016,
+          name: "TicketAlreadyRegistered",
+          msg: "Ticket has already been registered",
+        },
+      ]);
+      expect(rawIdl.errors?.map(({ name }) => name)).not.to.include(
+        "InvalidTierNumber"
+      );
     });
 
     it("pins Phase 3 discriminators, account order, and framework metadata", () => {
@@ -497,6 +559,38 @@ describe("lotto Phase 0-3", function () {
       expect(settle.args).to.deep.equal([]);
     });
 
+    it("pins the Phase 4 discriminator, account order, and framework metadata", () => {
+      const register = rawIdl.instructions.find(
+        ({ name }) => name === "register_winner"
+      )!;
+      const expectedDiscriminator = Array.from(
+        createHash("sha256")
+          .update("global:register_winner")
+          .digest()
+          .subarray(0, 8)
+      );
+
+      expect(register.discriminator).to.deep.equal(expectedDiscriminator);
+      expect(register.accounts.map(({ name }) => name)).to.deep.equal([
+        "user",
+        "round",
+        "ticket",
+        "config",
+        "treasury",
+      ]);
+      expect(register.accounts[0].signer).to.equal(true);
+      expect(register.accounts[0].writable).not.to.equal(true);
+      expect(register.accounts[0].relations).to.deep.equal(["ticket"]);
+      expect(register.accounts[1]).to.include({ writable: true });
+      expect(register.accounts[1].pda).not.to.equal(undefined);
+      expect(register.accounts[2]).to.include({ writable: true });
+      expect(register.accounts[2].pda).not.to.equal(undefined);
+      expect(register.accounts[3].pda).not.to.equal(undefined);
+      expect(register.accounts[3].writable).not.to.equal(true);
+      expect(register.accounts[4].writable).to.equal(true);
+      expect(register.args).to.deep.equal([]);
+    });
+
     it("pins independent binding, identity PDA, and callback encoding vectors", async () => {
       const u64Le = (value: number) => {
         return new anchor.BN(value).toArrayLike(Buffer, "le", 8);
@@ -510,7 +604,7 @@ describe("lotto Phase 0-3", function () {
         createHash("sha256")
           .update(
             Buffer.concat([
-              Buffer.from("solana_lottery:randomness:v1"),
+              Buffer.from("solana_lotto:randomness:v1"),
               program.programId.toBuffer(),
               round.toBuffer(),
             ])
@@ -526,10 +620,10 @@ describe("lotto Phase 0-3", function () {
         "14ifBYDhv6xyVNYCNxZd9Aq2rNsWJQbJiENEaaMa5vnA"
       );
       expect(deriveBinding(roundZero)).to.equal(
-        "0a8eb450257ae1878c891c1f5626e91782ae80567a631ca47582fd668ba5c155"
+        "5ac6714e65e4f8ceff10452b82f91de564e5efaba38eefcf574ad54207dfb1a1"
       );
       expect(deriveBinding(roundOne)).to.equal(
-        "a5abd7491dd57f2f199d17656266abcbc442f3ad89a86699de925cf26587097c"
+        "775d60baa4095340cb6977a9cf6875243d1de65cc43021b6a9e6efa5c9696fa2"
       );
       expect(requestProgramIdentity.toBase58()).to.equal(
         "27GRSHafNFC1SiMpaFvptBEt1oZwk47cmRZycv17kkdz"
@@ -611,6 +705,151 @@ describe("lotto Phase 0-3", function () {
       expect(JSON.stringify(type("Ticket"))).not.to.include("prize_tier");
       expect(JSON.stringify(type("TicketOutcome"))).to.include("Winner");
       expect(JSON.stringify(type("TicketOutcome"))).not.to.include('"u8"');
+    });
+  });
+
+  describe("Phase 4 independent winner derivation vectors", () => {
+    it("counts leading zero bits across every requested byte boundary", () => {
+      const vector = (prefix: number[], fill = 0xff) => {
+        const bytes = Buffer.alloc(32, fill);
+        Buffer.from(prefix).copy(bytes);
+        return bytes;
+      };
+      const vectors: Array<[string, Buffer, number]> = [
+        ["all one bits", Buffer.alloc(32, 0xff), 0],
+        ["first bit is one", vector([0x80]), 0],
+        ["one", vector([0x40]), 1],
+        ["seven", vector([0x01]), 7],
+        ["eight", vector([0x00, 0x80]), 8],
+        ["fifteen", vector([0x00, 0x01]), 15],
+        ["sixteen", vector([0x00, 0x00, 0x80]), 16],
+        ["twenty-three", vector([0x00, 0x00, 0x01]), 23],
+        ["twenty-four", vector([0x00, 0x00, 0x00, 0x80]), 24],
+        [
+          "two hundred fifty-five",
+          vector([...new Array(31).fill(0), 0x01]),
+          255,
+        ],
+        ["all zero bytes", Buffer.alloc(32), 256],
+      ];
+
+      for (const [label, bytes, expected] of vectors) {
+        expect(countLeadingZeroBits(bytes), label).to.equal(expected);
+      }
+    });
+
+    it("pins the reconstruction domain, fixed-width input order, and Ticket PDA", () => {
+      const roundId = new anchor.BN(42);
+      const user = systemProgram;
+      const [ticket, bump] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("ticket"),
+          roundId.toArrayLike(Buffer, "le", 8),
+          user.toBuffer(),
+        ],
+        program.programId
+      );
+      const randomness = Buffer.from(
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "hex"
+      );
+      const digest = deriveTicketHash(randomness, ticket);
+
+      expect(program.programId.toBase58()).to.equal(
+        "6pZAWE597dHz1YHqRmDdo6MMPK13BFzFLHJY9XWsmJsm"
+      );
+      expect(ticket.toBase58()).to.equal(
+        "D79bap8rRZhChnYoc6pYGgoU1bgL7BrzuBTyzyLCRoki"
+      );
+      expect(bump).to.equal(254);
+      expect(digest.toString("hex")).to.equal(
+        "c31b3c664edddd5261864e43498d20e8d2103e5884b4f082fbea2677d24c43dc"
+      );
+      expect(countLeadingZeroBits(digest)).to.equal(0);
+
+      const withoutDomain = createHash("sha256")
+        .update(Buffer.concat([randomness, ticket.toBuffer()]))
+        .digest();
+      const reversedInputs = createHash("sha256")
+        .update(
+          Buffer.concat([ticketRandomnessDomain, ticket.toBuffer(), randomness])
+        )
+        .digest();
+      expect(withoutDomain).not.to.deep.equal(digest);
+      expect(reversedInputs).not.to.deep.equal(digest);
+    });
+
+    it("pins independent SHA-256 vectors at the frozen score boundaries", () => {
+      const roundId = new anchor.BN(42);
+      const [ticket] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+          Buffer.from("ticket"),
+          roundId.toArrayLike(Buffer, "le", 8),
+          systemProgram.toBuffer(),
+        ],
+        program.programId
+      );
+      const vectors = [
+        [
+          7,
+          "cb00000000000000000000000000000000000000000000000000000000000000",
+          "01e2326677669c4cbaffde24b287e86e93dd080688add07dcaaac1b107cfb18d",
+        ],
+        [
+          8,
+          "fe00000000000000000000000000000000000000000000000000000000000000",
+          "009baa309ad6691a835c7d146959c1db15c1c8d80fa2975fdb87966e0bf4db93",
+        ],
+        [
+          15,
+          "445b000000000000000000000000000000000000000000000000000000000000",
+          "0001b96e2384bd2e34d6964c0a924c4a5e0c74d07985d3c7f88475c7327d0d6f",
+        ],
+        [
+          16,
+          "c1c8050000000000000000000000000000000000000000000000000000000000",
+          "00008fe674b555b9afe1dee0c811b23f33a1432839e2a6b12dd7e04724479bf1",
+        ],
+        [
+          23,
+          "fbd19e0000000000000000000000000000000000000000000000000000000000",
+          "000001cf1c0b0f48b7a137feb645b4a132dbdd60cbcc3cef8af58de8286e40d8",
+        ],
+        [
+          24,
+          "d224c80100000000000000000000000000000000000000000000000000000000",
+          "0000009abcc6e0d1a4f746c707f0bb396102087545cfa3745ea8a374557285b7",
+        ],
+      ] as const;
+
+      for (const [expectedScore, randomnessHex, digestHex] of vectors) {
+        const digest = deriveTicketHash(
+          Buffer.from(randomnessHex, "hex"),
+          ticket
+        );
+        expect(digest.toString("hex")).to.equal(digestHex);
+        expect(countLeadingZeroBits(digest)).to.equal(expectedScore);
+      }
+    });
+
+    it("maps the frozen thresholds by highest qualifying priority", () => {
+      const thresholds = [8, 16, 24] as const;
+      const vectors: Array<[number, "tier0" | "tier1" | "tier2" | null]> = [
+        [0, null],
+        [7, null],
+        [8, "tier0"],
+        [15, "tier0"],
+        [16, "tier1"],
+        [23, "tier1"],
+        [24, "tier2"],
+        [256, "tier2"],
+      ];
+      for (const [score, expected] of vectors) {
+        expect(mapScoreToTier(score, thresholds), `score ${score}`).to.equal(
+          expected
+        );
+      }
+      expect(mapScoreToTier(24, [8, 16, 24])).to.equal("tier2");
     });
   });
 
@@ -1721,7 +1960,7 @@ describe("lotto Phase 0-3", function () {
         return createHash("sha256")
           .update(
             Buffer.concat([
-              Buffer.from("solana_lottery:randomness:v1"),
+              Buffer.from("solana_lotto:randomness:v1"),
               program.programId.toBuffer(),
               activeRound.toBuffer(),
             ])
@@ -2194,6 +2433,572 @@ describe("lotto Phase 0-3", function () {
             }
           );
         });
+      });
+    });
+
+    describe("Phase 4 winner registration", function () {
+      this.timeout(60_000);
+
+      const registrationUsers = Array.from({ length: 12 }, () =>
+        anchor.web3.Keypair.generate()
+      );
+
+      function registerAccounts(
+        user: anchor.web3.PublicKey,
+        overrides: Partial<{
+          user: anchor.web3.PublicKey;
+          round: anchor.web3.PublicKey;
+          ticket: anchor.web3.PublicKey;
+          config: anchor.web3.PublicKey;
+          treasury: anchor.web3.PublicKey;
+        }> = {}
+      ) {
+        return {
+          user,
+          round: activeRound,
+          ticket: ticketPda(user).ticket,
+          config,
+          treasury: provider.wallet.publicKey,
+          ...overrides,
+        };
+      }
+
+      async function putTicketFixture(
+        user: anchor.web3.PublicKey,
+        quantity: number
+      ) {
+        const { ticket, bump } = ticketPda(user);
+        const encoded = await program.coder.accounts.encode("ticket", {
+          user,
+          roundId: activeRoundId,
+          quantity,
+          outcome: { unregistered: {} },
+          bump,
+        } as never);
+        const data = Buffer.alloc(program.account.ticket.size);
+        encoded.copy(data);
+        await setAccount(ticket, {
+          lamports: ticketRent,
+          data,
+          owner: program.programId,
+          executable: false,
+        });
+        return ticket;
+      }
+
+      async function withRegistrationRound(
+        overrides: Record<string, unknown>,
+        operation: () => Promise<void>
+      ) {
+        const info = await provider.connection.getAccountInfo(
+          activeRound,
+          "confirmed"
+        );
+        const current = await program.account.round.fetch(
+          activeRound,
+          "confirmed"
+        );
+        const now = await chainTimestamp();
+        const data = await program.coder.accounts.encode("round", {
+          ...current,
+          status: { registering: {} },
+          registrationDeadline: now.add(new anchor.BN(1_000)),
+          ...overrides,
+        } as never);
+        await setAccount(activeRound, {
+          lamports: info!.lamports,
+          data,
+          owner: info!.owner,
+          executable: false,
+        });
+        try {
+          await operation();
+        } finally {
+          await setAccount(activeRound, {
+            lamports: info!.lamports,
+            data: info!.data,
+            owner: info!.owner,
+            executable: false,
+          });
+        }
+      }
+
+      function findRandomness(
+        ticket: anchor.web3.PublicKey,
+        predicate: (score: number) => boolean
+      ) {
+        for (let counter = 0; counter < 1_000_000; counter += 1) {
+          const randomness = Buffer.alloc(32);
+          randomness.writeUInt32LE(counter, 0);
+          const score = countLeadingZeroBits(
+            deriveTicketHash(randomness, ticket)
+          );
+          if (predicate(score)) return { randomness, score };
+        }
+        throw new Error("unable to find a Phase 4 randomness fixture");
+      }
+
+      function exactTierFixture(
+        ticket: anchor.web3.PublicKey,
+        tier: 0 | 1 | 2
+      ) {
+        const { randomness, score } = findRandomness(
+          ticket,
+          (candidate) => candidate >= 3 && candidate <= 253
+        );
+        const thresholds: [number, number, number] =
+          tier === 0
+            ? [score, score + 1, score + 2]
+            : tier === 1
+            ? [score - 1, score, score + 1]
+            : [score - 2, score - 1, score];
+        return { randomness, score, thresholds };
+      }
+
+      async function submitRegistration(
+        user: anchor.web3.Keypair,
+        overrides: Partial<ReturnType<typeof registerAccounts>> = {}
+      ) {
+        return submitRecorded(
+          await program.methods
+            .registerWinner()
+            .accountsStrict(registerAccounts(user.publicKey, overrides))
+            .transaction(),
+          [user]
+        );
+      }
+
+      function winnerTier(outcome: unknown) {
+        const winner = (
+          outcome as {
+            winner: Record<number, Record<string, Record<string, never>>>;
+          }
+        ).winner;
+        return Object.keys(winner[0])[0];
+      }
+
+      before(async () => {
+        await provider.sendAndConfirm(
+          new anchor.web3.Transaction().add(
+            ...registrationUsers.map((user) =>
+              anchor.web3.SystemProgram.transfer({
+                fromPubkey: provider.wallet.publicKey,
+                toPubkey: user.publicKey,
+                lamports: minimumRent,
+              })
+            )
+          ),
+          [],
+          { commitment: "confirmed" }
+        );
+      });
+
+      it("uses the Round snapshot, derives one Tier0 outcome, and applies quantity as a multiplier", async () => {
+        const user = registrationUsers[0];
+        const ticket = await putTicketFixture(user.publicKey, 5);
+        const fixture = exactTierFixture(ticket, 0);
+        const registeredBefore = [
+          new anchor.BN(11),
+          new anchor.BN(22),
+          new anchor.BN(33),
+        ];
+        const configBefore = await program.account.lottoConfig.fetch(config);
+        expect(configBefore.tierThresholds).not.to.deep.equal(
+          fixture.thresholds
+        );
+
+        await withRegistrationRound(
+          {
+            randomness: Array.from(fixture.randomness),
+            tierThresholds: fixture.thresholds,
+            registeredUnits: registeredBefore,
+          },
+          async () => {
+            const before = await program.account.round.fetch(activeRound);
+            const receipt = await submitRegistration(user);
+            expect(
+              receipt.meta!.err,
+              receipt.meta!.logMessages?.join("\n")
+            ).to.equal(null);
+
+            const [roundAfter, ticketAfter] = await Promise.all([
+              program.account.round.fetch(activeRound),
+              program.account.ticket.fetch(ticket),
+            ]);
+            expect(fixture.score).to.equal(fixture.thresholds[0]);
+            expect(
+              roundAfter.registeredUnits.map((value) => value.toString())
+            ).to.deep.equal(["16", "22", "33"]);
+            expect(winnerTier(ticketAfter.outcome)).to.equal("tier0");
+            expect(ticketAfter.quantity).to.equal(5);
+            expect(roundAfter.status).to.deep.equal({ registering: {} });
+            expect(roundAfter.prizePerUnit).to.deep.equal(before.prizePerUnit);
+            expect(roundAfter.salesProceeds.eq(before.salesProceeds)).to.equal(
+              true
+            );
+            expect(roundAfter.rolloverIn.eq(before.rolloverIn)).to.equal(true);
+            expect(Array.from(roundAfter.randomness)).to.deep.equal(
+              Array.from(fixture.randomness)
+            );
+          }
+        );
+      });
+
+      for (const [tier, expectedName] of [
+        [1, "tier1"],
+        [2, "tier2"],
+      ] as const) {
+        it(`selects ${expectedName} at its exact threshold with highest-tier priority`, async () => {
+          const user = registrationUsers[tier];
+          const ticket = await putTicketFixture(user.publicKey, 1);
+          const fixture = exactTierFixture(ticket, tier);
+          await withRegistrationRound(
+            {
+              randomness: Array.from(fixture.randomness),
+              tierThresholds: fixture.thresholds,
+              registeredUnits: [
+                new anchor.BN(0),
+                new anchor.BN(0),
+                new anchor.BN(0),
+              ],
+            },
+            async () => {
+              const receipt = await submitRegistration(user);
+              expect(receipt.meta!.err).to.equal(null);
+              const [roundAfter, ticketAfter] = await Promise.all([
+                program.account.round.fetch(activeRound),
+                program.account.ticket.fetch(ticket),
+              ]);
+              expect(fixture.score).to.equal(fixture.thresholds[tier]);
+              expect(
+                roundAfter.registeredUnits.map((value) => value.toString())
+              ).to.deep.equal(tier === 1 ? ["0", "1", "0"] : ["0", "0", "1"]);
+              expect(winnerTier(ticketAfter.outcome)).to.equal(expectedName);
+            }
+          );
+        });
+      }
+
+      it("treats a non-winner as transient, closes the Ticket to Treasury, and rejects replay at deserialization", async () => {
+        const user = registrationUsers[3];
+        const ticket = await putTicketFixture(user.publicKey, 7);
+        const { randomness, score } = findRandomness(
+          ticket,
+          (candidate) => candidate <= 252
+        );
+        const thresholds: [number, number, number] = [
+          score + 1,
+          score + 2,
+          score + 3,
+        ];
+
+        await withRegistrationRound(
+          {
+            randomness: Array.from(randomness),
+            tierThresholds: thresholds,
+            registeredUnits: [
+              new anchor.BN(4),
+              new anchor.BN(5),
+              new anchor.BN(6),
+            ],
+          },
+          async () => {
+            const treasuryBefore = await provider.connection.getBalance(
+              provider.wallet.publicKey,
+              "confirmed"
+            );
+            const receipt = await submitRegistration(user);
+            expect(receipt.meta!.err).to.equal(null);
+            const treasuryAfter = await provider.connection.getBalance(
+              provider.wallet.publicKey,
+              "confirmed"
+            );
+            expect(await provider.connection.getAccountInfo(ticket)).to.equal(
+              null
+            );
+            expect(treasuryAfter - treasuryBefore).to.equal(
+              ticketRent - receipt.meta!.fee
+            );
+            const roundAfter = await program.account.round.fetch(activeRound);
+            expect(
+              roundAfter.registeredUnits.map((value) => value.toString())
+            ).to.deep.equal(["4", "5", "6"]);
+
+            const roundBeforeReplay = await snapshot([activeRound]);
+            const replay = await submitRegistration(user);
+            expectReceiptError(replay, "AccountNotInitialized");
+            expect(await snapshot([activeRound])).to.deep.equal(
+              roundBeforeReplay
+            );
+            expect(await provider.connection.getAccountInfo(ticket)).to.equal(
+              null
+            );
+          }
+        );
+      });
+
+      it("separates wrong lifecycle state from registration deadline equality and expiry", async () => {
+        const user = registrationUsers[4];
+        const ticket = await putTicketFixture(user.publicKey, 1);
+        const fixture = exactTierFixture(ticket, 0);
+        const watched = [activeRound, ticket];
+
+        await withRegistrationRound(
+          {
+            status: { selling: {} },
+            randomness: Array.from(fixture.randomness),
+            tierThresholds: fixture.thresholds,
+          },
+          async () => {
+            await expectRejectedWithoutChanges(
+              await program.methods
+                .registerWinner()
+                .accountsStrict(registerAccounts(user.publicKey))
+                .transaction(),
+              "RoundNotRegistering",
+              watched,
+              [user]
+            );
+          }
+        );
+
+        for (const offset of [0, -1]) {
+          const now = await chainTimestamp();
+          await withRegistrationRound(
+            {
+              randomness: Array.from(fixture.randomness),
+              tierThresholds: fixture.thresholds,
+              registrationDeadline: now.add(new anchor.BN(offset)),
+            },
+            async () => {
+              await expectRejectedWithoutChanges(
+                await program.methods
+                  .registerWinner()
+                  .accountsStrict(registerAccounts(user.publicKey))
+                  .transaction(),
+                "RegistrationClosed",
+                watched,
+                [user]
+              );
+            }
+          );
+        }
+      });
+
+      it("rejects cross-player Ticket substitution with framework constraints", async () => {
+        const owner = registrationUsers[5];
+        const attacker = registrationUsers[6];
+        const ownerTicket = await putTicketFixture(owner.publicKey, 1);
+        const fixture = exactTierFixture(ownerTicket, 0);
+        await withRegistrationRound(
+          {
+            randomness: Array.from(fixture.randomness),
+            tierThresholds: fixture.thresholds,
+          },
+          async () => {
+            await expectRejectedWithoutChanges(
+              await program.methods
+                .registerWinner()
+                .accountsStrict(
+                  registerAccounts(attacker.publicKey, {
+                    ticket: ownerTicket,
+                  })
+                )
+                .transaction(),
+              "ConstraintSeeds",
+              [activeRound, ownerTicket],
+              [attacker]
+            );
+          }
+        );
+      });
+
+      it("rejects cross-Round Tickets, non-program Tickets, and a wrong Treasury", async () => {
+        const user = registrationUsers[7];
+        const ticket = await putTicketFixture(user.publicKey, 1);
+        const fixture = exactTierFixture(ticket, 0);
+        const currentRoundInfo = await provider.connection.getAccountInfo(
+          activeRound,
+          "confirmed"
+        );
+        const currentRound = await program.account.round.fetch(activeRound);
+        const wrongRoundId = activeRoundId.add(new anchor.BN(9_999));
+        const wrongRoundPdas = roundPdas(wrongRoundId);
+        const wrongRoundData = await program.coder.accounts.encode("round", {
+          ...currentRound,
+          roundId: wrongRoundId,
+          status: { registering: {} },
+          bump: wrongRoundPdas.roundBump,
+        } as never);
+        await setAccount(wrongRoundPdas.round, {
+          lamports: currentRoundInfo!.lamports,
+          data: wrongRoundData,
+          owner: program.programId,
+          executable: false,
+        });
+
+        await withRegistrationRound(
+          {
+            randomness: Array.from(fixture.randomness),
+            tierThresholds: fixture.thresholds,
+          },
+          async () => {
+            await expectRejectedWithoutChanges(
+              await program.methods
+                .registerWinner()
+                .accountsStrict(
+                  registerAccounts(user.publicKey, {
+                    round: wrongRoundPdas.round,
+                  })
+                )
+                .transaction(),
+              "ConstraintSeeds",
+              [activeRound, wrongRoundPdas.round, ticket],
+              [user]
+            );
+            await expectRejectedWithoutChanges(
+              await program.methods
+                .registerWinner()
+                .accountsStrict(
+                  registerAccounts(user.publicKey, {
+                    ticket: substituteSystemAccount,
+                  })
+                )
+                .transaction(),
+              "AccountOwnedByWrongProgram",
+              [activeRound, ticket, substituteSystemAccount],
+              [user]
+            );
+            await expectRejectedWithoutChanges(
+              await program.methods
+                .registerWinner()
+                .accountsStrict(
+                  registerAccounts(user.publicKey, {
+                    treasury: substituteSystemAccount,
+                  })
+                )
+                .transaction(),
+              "ConstraintAddress",
+              [activeRound, ticket, substituteSystemAccount],
+              [user]
+            );
+          }
+        );
+      });
+
+      it("persists winner replay protection without changing the ledger twice", async () => {
+        const user = registrationUsers[8];
+        const ticket = await putTicketFixture(user.publicKey, 2);
+        const fixture = exactTierFixture(ticket, 1);
+        await withRegistrationRound(
+          {
+            randomness: Array.from(fixture.randomness),
+            tierThresholds: fixture.thresholds,
+            registeredUnits: [
+              new anchor.BN(0),
+              new anchor.BN(0),
+              new anchor.BN(0),
+            ],
+          },
+          async () => {
+            expect((await submitRegistration(user)).meta!.err).to.equal(null);
+            const beforeReplay = await snapshot([activeRound, ticket]);
+            const replay = await submitRegistration(user);
+            expectReceiptError(replay, "TicketAlreadyRegistered");
+            expect(await snapshot([activeRound, ticket])).to.deep.equal(
+              beforeReplay
+            );
+          }
+        );
+      });
+
+      it("uses ArithmeticError for registered_units overflow with full rollback", async () => {
+        const user = registrationUsers[9];
+        const ticket = await putTicketFixture(user.publicKey, 1);
+        const fixture = exactTierFixture(ticket, 0);
+        await withRegistrationRound(
+          {
+            randomness: Array.from(fixture.randomness),
+            tierThresholds: fixture.thresholds,
+            registeredUnits: [
+              new anchor.BN("18446744073709551615"),
+              new anchor.BN(0),
+              new anchor.BN(0),
+            ],
+          },
+          async () => {
+            await expectRejectedWithoutChanges(
+              await program.methods
+                .registerWinner()
+                .accountsStrict(registerAccounts(user.publicKey))
+                .transaction(),
+              "ArithmeticError",
+              [activeRound, ticket],
+              [user]
+            );
+          }
+        );
+      });
+
+      it("rejects a malformed nested PrizeTier during account deserialization before the handler", async () => {
+        const user = registrationUsers[11];
+        const { ticket, bump } = ticketPda(user.publicKey);
+        const malformed = await program.coder.accounts.encode("ticket", {
+          user: user.publicKey,
+          roundId: activeRoundId,
+          quantity: 1,
+          outcome: { winner: [{ tier0: {} }] },
+          bump,
+        } as never);
+        malformed[malformed.length - 2] = 3;
+        await setAccount(ticket, {
+          lamports: ticketRent,
+          data: malformed,
+          owner: program.programId,
+          executable: false,
+        });
+        const roundBefore = await snapshot([activeRound]);
+        const receipt = await submitRegistration(user);
+        expectReceiptError(receipt, "AccountDidNotDeserialize");
+        expect(await snapshot([activeRound])).to.deep.equal(roundBefore);
+      });
+
+      it("rolls back winner ledger and Ticket outcome when a later instruction fails", async () => {
+        const user = registrationUsers[10];
+        const ticket = await putTicketFixture(user.publicKey, 3);
+        const fixture = exactTierFixture(ticket, 2);
+        await withRegistrationRound(
+          {
+            randomness: Array.from(fixture.randomness),
+            tierThresholds: fixture.thresholds,
+            registeredUnits: [
+              new anchor.BN(0),
+              new anchor.BN(0),
+              new anchor.BN(0),
+            ],
+          },
+          async () => {
+            const watched = [activeRound, ticket];
+            const before = await snapshot(watched);
+            const transaction = await program.methods
+              .registerWinner()
+              .accountsStrict(registerAccounts(user.publicKey))
+              .postInstructions([
+                anchor.web3.SystemProgram.transfer({
+                  fromPubkey: provider.wallet.publicKey,
+                  toPubkey: rolloverVault,
+                  lamports: Number.MAX_SAFE_INTEGER,
+                }),
+              ])
+              .transaction();
+            const receipt = await submitRecorded(transaction, [user]);
+            expect(receipt.meta!.err).not.to.equal(null);
+            expect(receipt.meta!.logMessages).to.include(
+              `Program ${program.programId.toBase58()} success`
+            );
+            expect(await snapshot(watched)).to.deep.equal(before);
+          }
+        );
       });
     });
   });

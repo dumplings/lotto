@@ -46,4 +46,8 @@ pub mod lotto {
     pub fn settle_randomness(ctx: Context<SettleRandomness>) -> Result<()> {
         handle_settle_randomness(ctx)
     }
+
+    pub fn register_winner(ctx: Context<RegisterWinner>) -> Result<()> {
+        handle_register_winner(ctx)
+    }
 }

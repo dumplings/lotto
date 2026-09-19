@@ -52,6 +52,16 @@ pub enum PrizeTier {
     Tier2,
 }
 
+impl PrizeTier {
+    pub fn index(&self) -> usize {
+        match self {
+            PrizeTier::Tier0 => 0,
+            PrizeTier::Tier1 => 1,
+            PrizeTier::Tier2 => 2,
+        }
+    }
+}
+
 #[account]
 #[derive(InitSpace)]
 pub struct Round {
