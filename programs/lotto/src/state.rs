@@ -60,6 +60,8 @@ impl PrizeTier {
             PrizeTier::Tier2 => 2,
         }
     }
+
+    pub const ALL: [PrizeTier; 3] = [PrizeTier::Tier0, PrizeTier::Tier1, PrizeTier::Tier2];
 }
 
 #[account]

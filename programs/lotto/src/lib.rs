@@ -50,4 +50,12 @@ pub mod lotto {
     pub fn register_winner(ctx: Context<RegisterWinner>) -> Result<()> {
         handle_register_winner(ctx)
     }
+
+    pub fn finalize_registration(ctx: Context<FinalizeRegistration>) -> Result<()> {
+        handle_finalize_registration(ctx)
+    }
+
+    pub fn claim_prize(ctx: Context<ClaimPrize>) -> Result<()> {
+        handle_claim_prize(ctx)
+    }
 }

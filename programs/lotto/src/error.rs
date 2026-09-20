@@ -36,4 +36,12 @@ pub enum LottoError {
     RegistrationClosed,
     #[msg("Ticket has already been registered")]
     TicketAlreadyRegistered,
+    #[msg("Registration window is still open")]
+    RegistrationStillOpen,
+    #[msg("Round is not in Claiming phase")]
+    RoundNotClaiming,
+    #[msg("Claim window has closed")]
+    ClaimClosed,
+    #[msg("Ticket is not a registered winner")]
+    TicketNotWinner,
 }

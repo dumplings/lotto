@@ -28,9 +28,9 @@ fn determine_prize_tier(
 
     let score = count_leading_zero_bits(&hash);
 
-    for tier in [PrizeTier::Tier2, PrizeTier::Tier1, PrizeTier::Tier0] {
+    for tier in PrizeTier::ALL.iter().rev() {
         if score >= thresholds[tier.index()] {
-            return Some(tier);
+            return Some(*tier);
         }
     }
     None

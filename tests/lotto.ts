@@ -39,6 +39,7 @@ type RawIdl = {
     args: Array<{ name: string; type: unknown }>;
   }>;
   accounts?: Array<{ name: string }>;
+  events?: Array<{ name: string; discriminator: number[] }>;
   types?: RawIdlType[];
   errors?: Array<{ code: number; name: string; msg: string }>;
 };
@@ -96,7 +97,7 @@ function mapScoreToTier(
   return null;
 }
 
-describe("lotto Phase 0-4", function () {
+describe("lotto Phase 0-5", function () {
   this.timeout(60_000);
 
   const provider = anchor.AnchorProvider.env();
@@ -292,14 +293,16 @@ describe("lotto Phase 0-4", function () {
   });
 
   describe("generated ABI", () => {
-    it("pins the reconstruction Program ID and only the Phase 1-4 instructions", () => {
+    it("pins the reconstruction Program ID and only the Phase 1-5 instructions", () => {
       expect(program.programId.toBase58()).to.equal(
         "6pZAWE597dHz1YHqRmDdo6MMPK13BFzFLHJY9XWsmJsm"
       );
       expect(rawIdl.address).to.equal(program.programId.toBase58());
       expect(rawIdl.instructions.map(({ name }) => name)).to.deep.equal([
         "buy_ticket",
+        "claim_prize",
         "create_round",
+        "finalize_registration",
         "initialize_config",
         "receive_randomness",
         "register_winner",
@@ -309,7 +312,9 @@ describe("lotto Phase 0-4", function () {
       ]);
       expect(program.idl.instructions.map(({ name }) => name)).to.deep.equal([
         "buyTicket",
+        "claimPrize",
         "createRound",
+        "finalizeRegistration",
         "initializeConfig",
         "receiveRandomness",
         "registerWinner",
@@ -463,7 +468,7 @@ describe("lotto Phase 0-4", function () {
     });
 
     it("pins only the three reachable Phase 4 domain errors", () => {
-      expect(rawIdl.errors?.slice(14)).to.deep.equal([
+      expect(rawIdl.errors?.slice(14, 17)).to.deep.equal([
         {
           code: 6014,
           name: "RoundNotRegistering",
@@ -483,6 +488,34 @@ describe("lotto Phase 0-4", function () {
       expect(rawIdl.errors?.map(({ name }) => name)).not.to.include(
         "InvalidTierNumber"
       );
+      expect(rawIdl.errors?.map(({ name }) => name)).not.to.include(
+        "InvalidPrizeTier"
+      );
+    });
+
+    it("pins only the four reachable Phase 5 domain errors", () => {
+      expect(rawIdl.errors?.slice(17)).to.deep.equal([
+        {
+          code: 6017,
+          name: "RegistrationStillOpen",
+          msg: "Registration window is still open",
+        },
+        {
+          code: 6018,
+          name: "RoundNotClaiming",
+          msg: "Round is not in Claiming phase",
+        },
+        {
+          code: 6019,
+          name: "ClaimClosed",
+          msg: "Claim window has closed",
+        },
+        {
+          code: 6020,
+          name: "TicketNotWinner",
+          msg: "Ticket is not a registered winner",
+        },
+      ]);
     });
 
     it("pins Phase 3 discriminators, account order, and framework metadata", () => {
@@ -589,6 +622,81 @@ describe("lotto Phase 0-4", function () {
       expect(register.accounts[3].writable).not.to.equal(true);
       expect(register.accounts[4].writable).to.equal(true);
       expect(register.args).to.deep.equal([]);
+    });
+
+    it("pins Phase 5 discriminators, privileges, relationships, and event shape", () => {
+      const instruction = (name: string) =>
+        rawIdl.instructions.find((item) => item.name === name)!;
+      const expectedDiscriminator = (namespace: string, name: string) =>
+        Array.from(
+          createHash("sha256")
+            .update(`${namespace}:${name}`)
+            .digest()
+            .subarray(0, 8)
+        );
+      const finalize = instruction("finalize_registration");
+      const claim = instruction("claim_prize");
+
+      expect(finalize.discriminator).to.deep.equal(
+        expectedDiscriminator("global", "finalize_registration")
+      );
+      expect(finalize.accounts.map(({ name }) => name)).to.deep.equal([
+        "authority",
+        "config",
+        "round",
+      ]);
+      expect(finalize.accounts[0]).to.include({ signer: true });
+      expect(finalize.accounts[0].writable).not.to.equal(true);
+      expect(finalize.accounts[0].relations).to.deep.equal(["config"]);
+      expect(finalize.accounts[1].writable).not.to.equal(true);
+      expect(finalize.accounts[1].pda).not.to.equal(undefined);
+      expect(finalize.accounts[2]).to.include({ writable: true });
+      expect(finalize.accounts[2].pda).not.to.equal(undefined);
+      expect(finalize.args).to.deep.equal([]);
+
+      expect(claim.discriminator).to.deep.equal(
+        expectedDiscriminator("global", "claim_prize")
+      );
+      expect(claim.accounts.map(({ name }) => name)).to.deep.equal([
+        "user",
+        "config",
+        "round",
+        "ticket",
+        "prize_vault",
+        "treasury",
+        "system_program",
+      ]);
+      expect(claim.accounts[0]).to.include({ signer: true, writable: true });
+      expect(claim.accounts[0].relations).to.deep.equal(["ticket"]);
+      expect(claim.accounts[1].writable).not.to.equal(true);
+      expect(claim.accounts[1].pda).not.to.equal(undefined);
+      expect(claim.accounts[2].writable).not.to.equal(true);
+      expect(claim.accounts[2].pda).not.to.equal(undefined);
+      expect(claim.accounts[3]).to.include({ writable: true });
+      expect(claim.accounts[3].pda).not.to.equal(undefined);
+      expect(claim.accounts[4]).to.include({ writable: true });
+      expect(claim.accounts[4].pda).not.to.equal(undefined);
+      expect(claim.accounts[5].writable).to.equal(true);
+      expect(claim.accounts[6].address).to.equal(systemProgram.toBase58());
+      expect(claim.args).to.deep.equal([]);
+
+      expect(rawIdl.events).to.deep.equal([
+        {
+          name: "PrizeClaimed",
+          discriminator: expectedDiscriminator("event", "PrizeClaimed"),
+        },
+      ]);
+      const claimEvent = rawIdl.types?.find(
+        ({ name }) => name === "PrizeClaimed"
+      );
+      expect(claimEvent?.type.kind).to.equal("struct");
+      expect(claimEvent?.type.fields).to.deep.equal([
+        { name: "round_id", type: "u64" },
+        { name: "user", type: "pubkey" },
+        { name: "tier", type: { defined: { name: "PrizeTier" } } },
+        { name: "quantity", type: "u32" },
+        { name: "amount", type: "u64" },
+      ]);
     });
 
     it("pins independent binding, identity PDA, and callback encoding vectors", async () => {
@@ -2998,6 +3106,983 @@ describe("lotto Phase 0-4", function () {
             );
             expect(await snapshot(watched)).to.deep.equal(before);
           }
+        );
+      });
+    });
+
+    describe("Phase 5 prize finalization and claim", function () {
+      type PrizeTierNumber = 0 | 1 | 2;
+
+      const phase5Users = Array.from({ length: 8 }, () =>
+        anchor.web3.Keypair.generate()
+      );
+      const unauthorizedFinalizer = anchor.web3.Keypair.generate();
+      const u64Max = new anchor.BN("18446744073709551615");
+      const i64Max = new anchor.BN("9223372036854775807");
+
+      function finalizeAccounts(
+        overrides: Partial<{
+          authority: anchor.web3.PublicKey;
+          config: anchor.web3.PublicKey;
+          round: anchor.web3.PublicKey;
+        }> = {}
+      ) {
+        return {
+          authority: provider.wallet.publicKey,
+          config,
+          round: activeRound,
+          ...overrides,
+        };
+      }
+
+      function claimAccounts(
+        user: anchor.web3.PublicKey,
+        overrides: Partial<{
+          user: anchor.web3.PublicKey;
+          config: anchor.web3.PublicKey;
+          round: anchor.web3.PublicKey;
+          ticket: anchor.web3.PublicKey;
+          prizeVault: anchor.web3.PublicKey;
+          treasury: anchor.web3.PublicKey;
+          systemProgram: anchor.web3.PublicKey;
+        }> = {}
+      ) {
+        return {
+          user,
+          config,
+          round: activeRound,
+          ticket: ticketPda(user).ticket,
+          prizeVault: activePrizeVault,
+          treasury: provider.wallet.publicKey,
+          systemProgram,
+          ...overrides,
+        };
+      }
+
+      async function putPhase5Ticket(
+        user: anchor.web3.PublicKey,
+        quantity: number,
+        tier: PrizeTierNumber | null
+      ) {
+        const { ticket, bump } = ticketPda(user);
+        const tierName = tier === null ? null : (`tier${tier}` as const);
+        const outcome =
+          tierName === null
+            ? { unregistered: {} }
+            : { winner: [{ [tierName]: {} }] };
+        const encoded = await program.coder.accounts.encode("ticket", {
+          user,
+          roundId: activeRoundId,
+          quantity,
+          outcome,
+          bump,
+        } as never);
+        const data = Buffer.alloc(program.account.ticket.size);
+        encoded.copy(data);
+        await setAccount(ticket, {
+          lamports: ticketRent,
+          data,
+          owner: program.programId,
+          executable: false,
+        });
+        return ticket;
+      }
+
+      async function withPhase5Round(
+        overrides: Record<string, unknown>,
+        operation: () => Promise<void>,
+        vaultBusinessLamports = 1_000_000
+      ) {
+        const [roundInfo, vaultInfo, current] = await Promise.all([
+          provider.connection.getAccountInfo(activeRound, "confirmed"),
+          provider.connection.getAccountInfo(activePrizeVault, "confirmed"),
+          program.account.round.fetch(activeRound, "confirmed"),
+        ]);
+        expect(roundInfo).not.to.equal(null);
+        expect(vaultInfo).not.to.equal(null);
+        const data = await program.coder.accounts.encode("round", {
+          ...current,
+          ...overrides,
+        } as never);
+        await setAccount(activeRound, {
+          lamports: roundInfo!.lamports,
+          data,
+          owner: roundInfo!.owner,
+          executable: false,
+        });
+        await setAccount(activePrizeVault, {
+          lamports: minimumRent + vaultBusinessLamports,
+          data: Buffer.alloc(0),
+          owner: systemProgram,
+          executable: false,
+        });
+        try {
+          await operation();
+        } finally {
+          await setAccount(activeRound, {
+            lamports: roundInfo!.lamports,
+            data: roundInfo!.data,
+            owner: roundInfo!.owner,
+            executable: false,
+          });
+          await setAccount(activePrizeVault, {
+            lamports: vaultInfo!.lamports,
+            data: vaultInfo!.data,
+            owner: vaultInfo!.owner,
+            executable: vaultInfo!.executable,
+          });
+        }
+      }
+
+      async function submitFinalize(
+        overrides: Partial<ReturnType<typeof finalizeAccounts>> = {},
+        signers: anchor.web3.Keypair[] = []
+      ) {
+        return submitRecorded(
+          await program.methods
+            .finalizeRegistration()
+            .accountsStrict(finalizeAccounts(overrides))
+            .transaction(),
+          signers
+        );
+      }
+
+      async function submitClaim(
+        user: anchor.web3.Keypair,
+        overrides: Partial<ReturnType<typeof claimAccounts>> = {}
+      ) {
+        return submitRecorded(
+          await program.methods
+            .claimPrize()
+            .accountsStrict(claimAccounts(user.publicKey, overrides))
+            .transaction(),
+          [user]
+        );
+      }
+
+      function parsedClaimEvent(
+        receipt: Awaited<ReturnType<typeof submitRecorded>>
+      ) {
+        const parser = new anchor.EventParser(program.programId, program.coder);
+        return Array.from(
+          parser.parseLogs(receipt.meta!.logMessages ?? [])
+        ).find(({ name }) => name === "prizeClaimed");
+      }
+
+      function findPhase5Randomness(
+        ticket: anchor.web3.PublicKey,
+        predicate: (score: number) => boolean
+      ) {
+        for (let counter = 0; counter < 1_000_000; counter += 1) {
+          const randomness = Buffer.alloc(32);
+          randomness.writeUInt32LE(counter, 0);
+          const score = countLeadingZeroBits(
+            deriveTicketHash(randomness, ticket)
+          );
+          if (predicate(score)) return { randomness, score };
+        }
+        throw new Error("unable to find a Phase 5 randomness fixture");
+      }
+
+      before(async () => {
+        await provider.sendAndConfirm(
+          new anchor.web3.Transaction().add(
+            ...[...phase5Users, unauthorizedFinalizer].map((user) =>
+              anchor.web3.SystemProgram.transfer({
+                fromPubkey: provider.wallet.publicKey,
+                toPubkey: user.publicKey,
+                lamports: minimumRent,
+              })
+            )
+          ),
+          [],
+          { commitment: "confirmed" }
+        );
+      });
+
+      describe("fixture-assisted finalize_registration", function () {
+        it("freezes independent floor accounting, zero-unit pools, unallocated BPS, dust, and zero payouts", async () => {
+          const nowBefore = await chainTimestamp();
+          const salesProceeds = new anchor.BN(1_000);
+          const rolloverIn = new anchor.BN(101);
+          const prizeBase = salesProceeds.add(rolloverIn);
+          const tierPoolBps = [2_500, 3_333, 1_000] as [number, number, number];
+          const registeredUnits = [
+            new anchor.BN(3),
+            new anchor.BN(0),
+            new anchor.BN(200),
+          ];
+          const expectedPools = tierPoolBps.map((bps) =>
+            prizeBase.muln(bps).divn(10_000)
+          );
+          const expectedPerUnit = [
+            expectedPools[0].div(registeredUnits[0]),
+            new anchor.BN(0),
+            expectedPools[2].div(registeredUnits[2]),
+          ];
+          expect(expectedPools.map((value) => value.toString())).to.deep.equal([
+            "275",
+            "366",
+            "110",
+          ]);
+          expect(
+            expectedPerUnit.map((value) => value.toString())
+          ).to.deep.equal(["91", "0", "0"]);
+          expect(tierPoolBps.reduce((sum, bps) => sum + bps, 0)).to.be.lessThan(
+            10_000
+          );
+
+          await withPhase5Round(
+            {
+              status: { registering: {} },
+              registrationDeadline: nowBefore.subn(1),
+              claimDurationSecs: new anchor.BN(37),
+              salesProceeds,
+              rolloverIn,
+              tierPoolBps,
+              registeredUnits,
+              prizePerUnit: [
+                new anchor.BN(9),
+                new anchor.BN(9),
+                new anchor.BN(9),
+              ],
+            },
+            async () => {
+              const before = await program.account.round.fetch(activeRound);
+              const receipt = await submitFinalize();
+              expect(
+                receipt.meta!.err,
+                receipt.meta!.logMessages?.join("\n")
+              ).to.equal(null);
+              const afterTime = await chainTimestamp();
+              const after = await program.account.round.fetch(activeRound);
+              expect(after.status).to.deep.equal({ claiming: {} });
+              expect(
+                after.prizePerUnit.map((value) => value.toString())
+              ).to.deep.equal(expectedPerUnit.map((value) => value.toString()));
+              const finalizedAt = after.claimDeadline.sub(
+                after.claimDurationSecs
+              );
+              expect(
+                finalizedAt.gte(nowBefore) && finalizedAt.lte(afterTime)
+              ).to.equal(true);
+              expect(after.salesProceeds.eq(before.salesProceeds)).to.equal(
+                true
+              );
+              expect(after.rolloverIn.eq(before.rolloverIn)).to.equal(true);
+              expect(after.tierPoolBps).to.deep.equal(before.tierPoolBps);
+              expect(
+                after.registeredUnits.map((value) => value.toString())
+              ).to.deep.equal(
+                before.registeredUnits.map((value) => value.toString())
+              );
+            }
+          );
+        });
+
+        it("accepts the exact registration deadline and rejects repeat finalization", async () => {
+          const deadline = await chainTimestamp();
+          await withPhase5Round(
+            {
+              status: { registering: {} },
+              registrationDeadline: deadline,
+              claimDurationSecs: new anchor.BN(100),
+              salesProceeds: new anchor.BN(100),
+              rolloverIn: new anchor.BN(0),
+              tierPoolBps: [10_000, 0, 0],
+              registeredUnits: [
+                new anchor.BN(1),
+                new anchor.BN(0),
+                new anchor.BN(0),
+              ],
+            },
+            async () => {
+              expect((await submitFinalize()).meta!.err).to.equal(null);
+              const frozen = await snapshot([activeRound]);
+              const replay = await submitFinalize();
+              expectReceiptError(replay, "RoundNotRegistering");
+              expect(await snapshot([activeRound])).to.deep.equal(frozen);
+            }
+          );
+        });
+
+        it("rejects too-early, wrong-lifecycle, and unauthorized finalization without mutation", async () => {
+          const now = await chainTimestamp();
+          for (const [overrides, code] of [
+            [
+              {
+                status: { registering: {} },
+                registrationDeadline: now.addn(1_000),
+              },
+              "RegistrationStillOpen",
+            ],
+            [
+              {
+                status: { randomnessPending: {} },
+                registrationDeadline: now.subn(1),
+              },
+              "RoundNotRegistering",
+            ],
+          ] as const) {
+            await withPhase5Round(overrides, async () => {
+              await expectRejectedWithoutChanges(
+                await program.methods
+                  .finalizeRegistration()
+                  .accountsStrict(finalizeAccounts())
+                  .transaction(),
+                code,
+                [activeRound]
+              );
+            });
+          }
+
+          await withPhase5Round(
+            {
+              status: { registering: {} },
+              registrationDeadline: now.subn(1),
+            },
+            async () => {
+              await expectRejectedWithoutChanges(
+                await program.methods
+                  .finalizeRegistration()
+                  .accountsStrict(
+                    finalizeAccounts({
+                      authority: unauthorizedFinalizer.publicKey,
+                    })
+                  )
+                  .transaction(),
+                "ConstraintHasOne",
+                [activeRound],
+                [unauthorizedFinalizer]
+              );
+            }
+          );
+        });
+
+        it("rejects an inactive canonical Round with ConstraintRaw", async () => {
+          const current = await program.account.round.fetch(activeRound);
+          const currentInfo = await provider.connection.getAccountInfo(
+            activeRound,
+            "confirmed"
+          );
+          const wrongRoundId = activeRoundId.add(new anchor.BN(50_000));
+          const wrong = roundPdas(wrongRoundId);
+          const wrongData = await program.coder.accounts.encode("round", {
+            ...current,
+            roundId: wrongRoundId,
+            status: { registering: {} },
+            registrationDeadline: (await chainTimestamp()).subn(1),
+            bump: wrong.roundBump,
+          } as never);
+          await setAccount(wrong.round, {
+            lamports: currentInfo!.lamports,
+            data: wrongData,
+            owner: program.programId,
+            executable: false,
+          });
+          await expectRejectedWithoutChanges(
+            await program.methods
+              .finalizeRegistration()
+              .accountsStrict(finalizeAccounts({ round: wrong.round }))
+              .transaction(),
+            "ConstraintRaw",
+            [activeRound, wrong.round]
+          );
+        });
+
+        for (const [label, overrides] of [
+          [
+            "prize_base addition",
+            {
+              salesProceeds: u64Max,
+              rolloverIn: new anchor.BN(1),
+              tierPoolBps: [0, 0, 0],
+            },
+          ],
+          [
+            "tier pool multiplication",
+            {
+              salesProceeds: u64Max,
+              rolloverIn: new anchor.BN(0),
+              tierPoolBps: [2, 0, 0],
+            },
+          ],
+          [
+            "claim deadline",
+            {
+              salesProceeds: new anchor.BN(0),
+              rolloverIn: new anchor.BN(0),
+              tierPoolBps: [0, 0, 0],
+              claimDurationSecs: i64Max,
+            },
+          ],
+        ] as const) {
+          it(`uses ArithmeticError and rolls back ${label} overflow`, async () => {
+            const now = await chainTimestamp();
+            await withPhase5Round(
+              {
+                status: { registering: {} },
+                registrationDeadline: now.subn(1),
+                registeredUnits: [
+                  new anchor.BN(1),
+                  new anchor.BN(1),
+                  new anchor.BN(1),
+                ],
+                prizePerUnit: [
+                  new anchor.BN(7),
+                  new anchor.BN(8),
+                  new anchor.BN(9),
+                ],
+                ...overrides,
+              },
+              async () => {
+                await expectRejectedWithoutChanges(
+                  await program.methods
+                    .finalizeRegistration()
+                    .accountsStrict(finalizeAccounts())
+                    .transaction(),
+                  "ArithmeticError",
+                  [activeRound]
+                );
+              }
+            );
+          });
+        }
+
+        it("rolls back successful finalization when a later instruction fails", async () => {
+          const now = await chainTimestamp();
+          await withPhase5Round(
+            {
+              status: { registering: {} },
+              registrationDeadline: now.subn(1),
+              salesProceeds: new anchor.BN(100),
+              rolloverIn: new anchor.BN(0),
+              tierPoolBps: [10_000, 0, 0],
+              registeredUnits: [
+                new anchor.BN(2),
+                new anchor.BN(0),
+                new anchor.BN(0),
+              ],
+            },
+            async () => {
+              const before = await snapshot([activeRound]);
+              const transaction = await program.methods
+                .finalizeRegistration()
+                .accountsStrict(finalizeAccounts())
+                .postInstructions([
+                  anchor.web3.SystemProgram.transfer({
+                    fromPubkey: provider.wallet.publicKey,
+                    toPubkey: rolloverVault,
+                    lamports: Number.MAX_SAFE_INTEGER,
+                  }),
+                ])
+                .transaction();
+              const receipt = await submitRecorded(transaction);
+              expect(receipt.meta!.err).not.to.equal(null);
+              expect(receipt.meta!.logMessages).to.include(
+                `Program ${program.programId.toBase58()} success`
+              );
+              expect(await snapshot([activeRound])).to.deep.equal(before);
+            }
+          );
+        });
+      });
+
+      describe("fixture-assisted claim_prize", function () {
+        for (const [tier, quantity, perUnit] of [
+          [0, 2, 11],
+          [1, 3, 13],
+          [2, 4, 17],
+        ] as const) {
+          it(`claims a Tier${tier} Winner with exact quantity-multiplied payout, close, and event`, async () => {
+            const user = phase5Users[tier];
+            const ticket = await putPhase5Ticket(
+              user.publicKey,
+              quantity,
+              tier
+            );
+            const now = await chainTimestamp();
+            const prizePerUnit = [
+              new anchor.BN(11),
+              new anchor.BN(13),
+              new anchor.BN(17),
+            ];
+            const expectedAmount = perUnit * quantity;
+            await withPhase5Round(
+              {
+                status: { claiming: {} },
+                claimDeadline: now.addn(1_000),
+                prizePerUnit,
+              },
+              async () => {
+                const [userBefore, vaultBefore, treasuryBefore, roundBefore] =
+                  await Promise.all([
+                    provider.connection.getBalance(user.publicKey),
+                    provider.connection.getBalance(activePrizeVault),
+                    provider.connection.getBalance(provider.wallet.publicKey),
+                    snapshot([activeRound]),
+                  ]);
+                const receipt = await submitClaim(user);
+                expect(
+                  receipt.meta!.err,
+                  receipt.meta!.logMessages?.join("\n")
+                ).to.equal(null);
+                const [userAfter, vaultAfter, treasuryAfter, ticketAfter] =
+                  await Promise.all([
+                    provider.connection.getBalance(user.publicKey),
+                    provider.connection.getBalance(activePrizeVault),
+                    provider.connection.getBalance(provider.wallet.publicKey),
+                    provider.connection.getAccountInfo(ticket),
+                  ]);
+                expect(userAfter - userBefore).to.equal(expectedAmount);
+                expect(vaultBefore - vaultAfter).to.equal(expectedAmount);
+                expect(vaultAfter).to.be.at.least(minimumRent);
+                expect(treasuryAfter - treasuryBefore).to.equal(
+                  ticketRent - receipt.meta!.fee
+                );
+                expect(ticketAfter).to.equal(null);
+                expect(await snapshot([activeRound])).to.deep.equal(
+                  roundBefore
+                );
+
+                const event = parsedClaimEvent(receipt);
+                expect(event).not.to.equal(undefined);
+                const data = event!.data as {
+                  roundId: anchor.BN;
+                  user: anchor.web3.PublicKey;
+                  tier: Record<string, Record<string, never>>;
+                  quantity: number;
+                  amount: anchor.BN;
+                };
+                expect(data.roundId.eq(activeRoundId)).to.equal(true);
+                expect(data.user.equals(user.publicKey)).to.equal(true);
+                expect(Object.keys(data.tier)).to.deep.equal([`tier${tier}`]);
+                expect(data.quantity).to.equal(quantity);
+                expect(data.amount.eq(new anchor.BN(expectedAmount))).to.equal(
+                  true
+                );
+              }
+            );
+          });
+        }
+
+        it("successfully consumes and emits a zero-amount Winner claim", async () => {
+          const user = phase5Users[3];
+          const ticket = await putPhase5Ticket(user.publicKey, 7, 1);
+          const now = await chainTimestamp();
+          await withPhase5Round(
+            {
+              status: { claiming: {} },
+              claimDeadline: now.addn(1_000),
+              prizePerUnit: [
+                new anchor.BN(10),
+                new anchor.BN(0),
+                new anchor.BN(20),
+              ],
+            },
+            async () => {
+              const vaultBefore = await provider.connection.getBalance(
+                activePrizeVault
+              );
+              const receipt = await submitClaim(user);
+              expect(receipt.meta!.err).to.equal(null);
+              expect(
+                await provider.connection.getBalance(activePrizeVault)
+              ).to.equal(vaultBefore);
+              expect(await provider.connection.getAccountInfo(ticket)).to.equal(
+                null
+              );
+              const event = parsedClaimEvent(receipt)!;
+              expect(
+                (event.data as { amount: anchor.BN }).amount.isZero()
+              ).to.equal(true);
+            }
+          );
+        });
+
+        it("rejects an Unregistered Ticket with TicketNotWinner and no partial effect", async () => {
+          const user = phase5Users[4];
+          const ticket = await putPhase5Ticket(user.publicKey, 2, null);
+          const now = await chainTimestamp();
+          await withPhase5Round(
+            {
+              status: { claiming: {} },
+              claimDeadline: now.addn(1_000),
+              prizePerUnit: [
+                new anchor.BN(50),
+                new anchor.BN(60),
+                new anchor.BN(70),
+              ],
+            },
+            async () => {
+              const watched = [activeRound, activePrizeVault, ticket];
+              const before = await snapshot(watched);
+              const [userBefore, treasuryBefore] = await Promise.all([
+                provider.connection.getBalance(user.publicKey),
+                provider.connection.getBalance(provider.wallet.publicKey),
+              ]);
+              const receipt = await submitClaim(user);
+              expectReceiptError(receipt, "TicketNotWinner");
+              expect(await snapshot(watched)).to.deep.equal(before);
+              expect(
+                await provider.connection.getBalance(user.publicKey)
+              ).to.equal(userBefore);
+              expect(
+                (await provider.connection.getBalance(
+                  provider.wallet.publicKey
+                )) - treasuryBefore
+              ).to.equal(-receipt.meta!.fee);
+            }
+          );
+        });
+
+        it("prevents double claim by consuming the canonical Ticket", async () => {
+          const user = phase5Users[5];
+          const ticket = await putPhase5Ticket(user.publicKey, 1, 0);
+          const now = await chainTimestamp();
+          await withPhase5Round(
+            {
+              status: { claiming: {} },
+              claimDeadline: now.addn(1_000),
+              prizePerUnit: [
+                new anchor.BN(99),
+                new anchor.BN(0),
+                new anchor.BN(0),
+              ],
+            },
+            async () => {
+              expect((await submitClaim(user)).meta!.err).to.equal(null);
+              expect(await provider.connection.getAccountInfo(ticket)).to.equal(
+                null
+              );
+              const beforeReplay = await snapshot([
+                activeRound,
+                activePrizeVault,
+                user.publicKey,
+              ]);
+              const replay = await submitClaim(user);
+              expectReceiptError(replay, "AccountNotInitialized");
+              expect(
+                await snapshot([activeRound, activePrizeVault, user.publicKey])
+              ).to.deep.equal(beforeReplay);
+            }
+          );
+        });
+
+        it("separates wrong lifecycle from exact and expired claim deadlines", async () => {
+          const user = phase5Users[6];
+          const ticket = await putPhase5Ticket(user.publicKey, 1, 0);
+          const now = await chainTimestamp();
+          for (const [overrides, code] of [
+            [
+              { status: { registering: {} }, claimDeadline: now.addn(1_000) },
+              "RoundNotClaiming",
+            ],
+            [{ status: { claiming: {} }, claimDeadline: now }, "ClaimClosed"],
+            [
+              { status: { claiming: {} }, claimDeadline: now.subn(1) },
+              "ClaimClosed",
+            ],
+          ] as const) {
+            await withPhase5Round(overrides, async () => {
+              await expectRejectedWithoutChanges(
+                await program.methods
+                  .claimPrize()
+                  .accountsStrict(claimAccounts(user.publicKey))
+                  .transaction(),
+                code,
+                [activeRound, activePrizeVault, ticket],
+                [user]
+              );
+            });
+          }
+        });
+
+        it("rejects wrong Player, inactive Round, Prize Vault, and Treasury structurally", async () => {
+          const owner = phase5Users[0];
+          const attacker = phase5Users[1];
+          const ownerTicket = await putPhase5Ticket(owner.publicKey, 1, 0);
+          const now = await chainTimestamp();
+          await withPhase5Round(
+            {
+              status: { claiming: {} },
+              claimDeadline: now.addn(1_000),
+              prizePerUnit: [
+                new anchor.BN(10),
+                new anchor.BN(0),
+                new anchor.BN(0),
+              ],
+            },
+            async () => {
+              await expectRejectedWithoutChanges(
+                await program.methods
+                  .claimPrize()
+                  .accountsStrict(
+                    claimAccounts(attacker.publicKey, { ticket: ownerTicket })
+                  )
+                  .transaction(),
+                "ConstraintSeeds",
+                [activeRound, activePrizeVault, ownerTicket],
+                [attacker]
+              );
+
+              const current = await program.account.round.fetch(activeRound);
+              const currentInfo = await provider.connection.getAccountInfo(
+                activeRound,
+                "confirmed"
+              );
+              const wrongRoundId = activeRoundId.add(new anchor.BN(60_000));
+              const wrong = roundPdas(wrongRoundId);
+              const wrongData = await program.coder.accounts.encode("round", {
+                ...current,
+                roundId: wrongRoundId,
+                status: { claiming: {} },
+                claimDeadline: now.addn(1_000),
+                bump: wrong.roundBump,
+              } as never);
+              await setAccount(wrong.round, {
+                lamports: currentInfo!.lamports,
+                data: wrongData,
+                owner: program.programId,
+                executable: false,
+              });
+              await expectRejectedWithoutChanges(
+                await program.methods
+                  .claimPrize()
+                  .accountsStrict(
+                    claimAccounts(owner.publicKey, { round: wrong.round })
+                  )
+                  .transaction(),
+                "ConstraintRaw",
+                [activeRound, wrong.round, activePrizeVault, ownerTicket],
+                [owner]
+              );
+              await expectRejectedWithoutChanges(
+                await program.methods
+                  .claimPrize()
+                  .accountsStrict(
+                    claimAccounts(owner.publicKey, {
+                      prizeVault: substituteSystemAccount,
+                    })
+                  )
+                  .transaction(),
+                "ConstraintSeeds",
+                [activeRound, activePrizeVault, ownerTicket],
+                [owner]
+              );
+              await expectRejectedWithoutChanges(
+                await program.methods
+                  .claimPrize()
+                  .accountsStrict(
+                    claimAccounts(owner.publicKey, {
+                      treasury: substituteSystemAccount,
+                    })
+                  )
+                  .transaction(),
+                "ConstraintAddress",
+                [activeRound, activePrizeVault, ownerTicket],
+                [owner]
+              );
+            }
+          );
+        });
+
+        it("uses ArithmeticError for payout multiplication overflow with full rollback", async () => {
+          const user = phase5Users[2];
+          const ticket = await putPhase5Ticket(user.publicKey, 2, 0);
+          const now = await chainTimestamp();
+          await withPhase5Round(
+            {
+              status: { claiming: {} },
+              claimDeadline: now.addn(1_000),
+              prizePerUnit: [u64Max, new anchor.BN(0), new anchor.BN(0)],
+            },
+            async () => {
+              await expectRejectedWithoutChanges(
+                await program.methods
+                  .claimPrize()
+                  .accountsStrict(claimAccounts(user.publicKey))
+                  .transaction(),
+                "ArithmeticError",
+                [activeRound, activePrizeVault, ticket, user.publicKey],
+                [user]
+              );
+            }
+          );
+        });
+
+        it("rolls back Ticket close and balances when an underfunded Vault transfer fails", async () => {
+          const user = phase5Users[3];
+          const ticket = await putPhase5Ticket(user.publicKey, 1, 0);
+          const now = await chainTimestamp();
+          const impossiblePayout = minimumRent + 100;
+          await withPhase5Round(
+            {
+              status: { claiming: {} },
+              claimDeadline: now.addn(1_000),
+              prizePerUnit: [
+                new anchor.BN(impossiblePayout),
+                new anchor.BN(0),
+                new anchor.BN(0),
+              ],
+            },
+            async () => {
+              const before = await snapshot([
+                activeRound,
+                activePrizeVault,
+                ticket,
+                user.publicKey,
+              ]);
+              const receipt = await submitClaim(user);
+              expect(receipt.meta!.err).not.to.equal(null);
+              expect(
+                (receipt.meta!.logMessages ?? []).some((line) =>
+                  line.includes("Transfer: insufficient lamports")
+                )
+              ).to.equal(true);
+              expect(
+                await snapshot([
+                  activeRound,
+                  activePrizeVault,
+                  ticket,
+                  user.publicKey,
+                ])
+              ).to.deep.equal(before);
+            },
+            50
+          );
+        });
+
+        it("rolls back payout, event transaction, and Ticket close when a later instruction fails", async () => {
+          const user = phase5Users[4];
+          const ticket = await putPhase5Ticket(user.publicKey, 3, 0);
+          const now = await chainTimestamp();
+          await withPhase5Round(
+            {
+              status: { claiming: {} },
+              claimDeadline: now.addn(1_000),
+              prizePerUnit: [
+                new anchor.BN(12),
+                new anchor.BN(0),
+                new anchor.BN(0),
+              ],
+            },
+            async () => {
+              const watched = [
+                activeRound,
+                activePrizeVault,
+                ticket,
+                user.publicKey,
+              ];
+              const before = await snapshot(watched);
+              const transaction = await program.methods
+                .claimPrize()
+                .accountsStrict(claimAccounts(user.publicKey))
+                .postInstructions([
+                  anchor.web3.SystemProgram.transfer({
+                    fromPubkey: provider.wallet.publicKey,
+                    toPubkey: rolloverVault,
+                    lamports: Number.MAX_SAFE_INTEGER,
+                  }),
+                ])
+                .transaction();
+              const receipt = await submitRecorded(transaction, [user]);
+              expect(receipt.meta!.err).not.to.equal(null);
+              expect(receipt.meta!.logMessages).to.include(
+                `Program ${program.programId.toBase58()} success`
+              );
+              expect(await snapshot(watched)).to.deep.equal(before);
+            }
+          );
+        });
+      });
+
+      it("runs a fixture-assisted Registering -> Winner -> Claiming -> paid claim transaction flow", async () => {
+        const user = phase5Users[7];
+        const quantity = 3;
+        const ticket = await putPhase5Ticket(user.publicKey, quantity, null);
+        const { randomness, score } = findPhase5Randomness(
+          ticket,
+          (candidate) => candidate >= 1 && candidate <= 253
+        );
+        const thresholds: [number, number, number] = [
+          score,
+          score + 1,
+          score + 2,
+        ];
+        const registrationDeadline = (await chainTimestamp()).addn(100);
+        const prizeBase = 120;
+
+        await withPhase5Round(
+          {
+            status: { registering: {} },
+            randomness: Array.from(randomness),
+            tierThresholds: thresholds,
+            registrationDeadline,
+            claimDurationSecs: new anchor.BN(1_000),
+            registeredUnits: [
+              new anchor.BN(0),
+              new anchor.BN(0),
+              new anchor.BN(0),
+            ],
+            prizePerUnit: [
+              new anchor.BN(0),
+              new anchor.BN(0),
+              new anchor.BN(0),
+            ],
+            tierPoolBps: [10_000, 0, 0],
+            salesProceeds: new anchor.BN(prizeBase),
+            rolloverIn: new anchor.BN(0),
+          },
+          async () => {
+            const registration = await submitRecorded(
+              await program.methods
+                .registerWinner()
+                .accountsStrict({
+                  user: user.publicKey,
+                  round: activeRound,
+                  ticket,
+                  config,
+                  treasury: provider.wallet.publicKey,
+                })
+                .transaction(),
+              [user]
+            );
+            expect(registration.meta!.err).to.equal(null);
+            const registeredTicket = await program.account.ticket.fetch(ticket);
+            const registeredWinner = (
+              registeredTicket.outcome as unknown as {
+                winner: Record<number, Record<string, Record<string, never>>>;
+              }
+            ).winner;
+            expect(Object.keys(registeredWinner[0])).to.deep.equal(["tier0"]);
+
+            await setChainTime(registrationDeadline);
+            const finalization = await submitFinalize();
+            expect(finalization.meta!.err).to.equal(null);
+            const finalized = await program.account.round.fetch(activeRound);
+            expect(finalized.status).to.deep.equal({ claiming: {} });
+            expect(
+              finalized.registeredUnits.map((value) => value.toString())
+            ).to.deep.equal([String(quantity), "0", "0"]);
+            expect(
+              finalized.prizePerUnit.map((value) => value.toString())
+            ).to.deep.equal([String(prizeBase / quantity), "0", "0"]);
+
+            const userBefore = await provider.connection.getBalance(
+              user.publicKey
+            );
+            const claim = await submitClaim(user);
+            expect(claim.meta!.err).to.equal(null);
+            expect(
+              (await provider.connection.getBalance(user.publicKey)) -
+                userBefore
+            ).to.equal(prizeBase);
+            expect(await provider.connection.getAccountInfo(ticket)).to.equal(
+              null
+            );
+          },
+          prizeBase
         );
       });
     });
