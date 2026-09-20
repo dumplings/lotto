@@ -44,4 +44,8 @@ pub enum LottoError {
     ClaimClosed,
     #[msg("Ticket is not a registered winner")]
     TicketNotWinner,
+    #[msg("Claim window is still open")]
+    ClaimStillOpen,
+    #[msg("Round account is neither a valid live Round nor a valid closed Round")]
+    RoundCleanupStateInvalid,
 }

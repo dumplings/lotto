@@ -32,7 +32,14 @@ type RawIdl = {
       name: string;
       address?: string;
       relations?: string[];
-      pda?: unknown;
+      pda?: {
+        seeds?: Array<{
+          kind: string;
+          path?: string;
+          account?: string;
+          value?: number[];
+        }>;
+      };
       signer?: boolean;
       writable?: boolean;
     }>;
@@ -52,6 +59,15 @@ type RpcConnection = {
     method: string,
     params: unknown[]
   ): Promise<{ error?: unknown; result?: unknown }>;
+};
+type Phase6TransactionBuilder = {
+  accountsStrict(
+    accounts: Record<string, anchor.web3.PublicKey>
+  ): Phase6TransactionBuilder;
+  postInstructions(
+    instructions: anchor.web3.TransactionInstruction[]
+  ): Phase6TransactionBuilder;
+  transaction(): Promise<anchor.web3.Transaction>;
 };
 
 const { readFileSync } = process.getBuiltinModule("fs");
@@ -97,7 +113,7 @@ function mapScoreToTier(
   return null;
 }
 
-describe("lotto Phase 0-5", function () {
+describe("lotto Phase 0-6", function () {
   this.timeout(60_000);
 
   const provider = anchor.AnchorProvider.env();
@@ -293,7 +309,7 @@ describe("lotto Phase 0-5", function () {
   });
 
   describe("generated ABI", () => {
-    it("pins the reconstruction Program ID and only the Phase 1-5 instructions", () => {
+    it("pins the reconstruction Program ID and only the Phase 1-6 instructions", () => {
       expect(program.programId.toBase58()).to.equal(
         "6pZAWE597dHz1YHqRmDdo6MMPK13BFzFLHJY9XWsmJsm"
       );
@@ -301,8 +317,10 @@ describe("lotto Phase 0-5", function () {
       expect(rawIdl.instructions.map(({ name }) => name)).to.deep.equal([
         "buy_ticket",
         "claim_prize",
+        "cleanup_expired_ticket",
         "create_round",
         "finalize_registration",
+        "finalize_round",
         "initialize_config",
         "receive_randomness",
         "register_winner",
@@ -313,8 +331,10 @@ describe("lotto Phase 0-5", function () {
       expect(program.idl.instructions.map(({ name }) => name)).to.deep.equal([
         "buyTicket",
         "claimPrize",
+        "cleanupExpiredTicket",
         "createRound",
         "finalizeRegistration",
+        "finalizeRound",
         "initializeConfig",
         "receiveRandomness",
         "registerWinner",
@@ -494,7 +514,7 @@ describe("lotto Phase 0-5", function () {
     });
 
     it("pins only the four reachable Phase 5 domain errors", () => {
-      expect(rawIdl.errors?.slice(17)).to.deep.equal([
+      expect(rawIdl.errors?.slice(17, 21)).to.deep.equal([
         {
           code: 6017,
           name: "RegistrationStillOpen",
@@ -514,6 +534,21 @@ describe("lotto Phase 0-5", function () {
           code: 6020,
           name: "TicketNotWinner",
           msg: "Ticket is not a registered winner",
+        },
+      ]);
+    });
+
+    it("appends only the two reachable Phase 6 domain errors", () => {
+      expect(rawIdl.errors?.slice(21)).to.deep.equal([
+        {
+          code: 6021,
+          name: "ClaimStillOpen",
+          msg: "Claim window is still open",
+        },
+        {
+          code: 6022,
+          name: "RoundCleanupStateInvalid",
+          msg: "Round account is neither a valid live Round nor a valid closed Round",
         },
       ]);
     });
@@ -680,12 +715,12 @@ describe("lotto Phase 0-5", function () {
       expect(claim.accounts[6].address).to.equal(systemProgram.toBase58());
       expect(claim.args).to.deep.equal([]);
 
-      expect(rawIdl.events).to.deep.equal([
-        {
-          name: "PrizeClaimed",
-          discriminator: expectedDiscriminator("event", "PrizeClaimed"),
-        },
-      ]);
+      expect(
+        rawIdl.events?.find(({ name }) => name === "PrizeClaimed")
+      ).to.deep.equal({
+        name: "PrizeClaimed",
+        discriminator: expectedDiscriminator("event", "PrizeClaimed"),
+      });
       const claimEvent = rawIdl.types?.find(
         ({ name }) => name === "PrizeClaimed"
       );
@@ -697,6 +732,100 @@ describe("lotto Phase 0-5", function () {
         { name: "quantity", type: "u32" },
         { name: "amount", type: "u64" },
       ]);
+    });
+
+    it("pins finalize_round privileges and event ABI", () => {
+      const expectedDiscriminator = (namespace: string, name: string) =>
+        Array.from(
+          createHash("sha256")
+            .update(`${namespace}:${name}`)
+            .digest()
+            .subarray(0, 8)
+        );
+      const finalize = rawIdl.instructions.find(
+        ({ name }) => name === "finalize_round"
+      );
+
+      expect(
+        finalize,
+        "finalize_round must be a #[program] entrypoint"
+      ).not.to.equal(undefined);
+      expect(finalize!.discriminator).to.deep.equal(
+        expectedDiscriminator("global", "finalize_round")
+      );
+      expect(finalize!.accounts.map(({ name }) => name)).to.deep.equal([
+        "authority",
+        "config",
+        "round",
+        "prize_vault",
+        "rollover_vault",
+        "treasury",
+        "system_program",
+      ]);
+      expect(finalize!.accounts[0]).to.include({ signer: true });
+      expect(finalize!.accounts[0].writable).not.to.equal(true);
+      expect(finalize!.accounts[0].relations).to.deep.equal(["config"]);
+      for (const index of [1, 2, 3, 4, 5]) {
+        expect(finalize!.accounts[index].writable).to.equal(true);
+      }
+      expect(finalize!.accounts[1].pda).not.to.equal(undefined);
+      expect(finalize!.accounts[2].pda).not.to.equal(undefined);
+      expect(finalize!.accounts[3].pda).not.to.equal(undefined);
+      expect(finalize!.accounts[4].pda).not.to.equal(undefined);
+      expect(finalize!.accounts[6].address).to.equal(systemProgram.toBase58());
+      expect(finalize!.args).to.deep.equal([]);
+
+      expect(
+        rawIdl.events?.find(({ name }) => name === "RoundFinalized")
+      ).to.deep.equal({
+        name: "RoundFinalized",
+        discriminator: expectedDiscriminator("event", "RoundFinalized"),
+      });
+      const event = rawIdl.types?.find(({ name }) => name === "RoundFinalized");
+      expect(event?.type).to.deep.equal({
+        kind: "struct",
+        fields: [
+          { name: "round_id", type: "u64" },
+          { name: "rollover_out", type: "u64" },
+        ],
+      });
+    });
+
+    it("pins cleanup_expired_ticket privileges and canonical PDA relationships", () => {
+      const expectedDiscriminator = (namespace: string, name: string) =>
+        Array.from(
+          createHash("sha256")
+            .update(`${namespace}:${name}`)
+            .digest()
+            .subarray(0, 8)
+        );
+      const cleanup = rawIdl.instructions.find(
+        ({ name }) => name === "cleanup_expired_ticket"
+      );
+
+      expect(cleanup).not.to.equal(undefined);
+      expect(cleanup!.discriminator).to.deep.equal(
+        expectedDiscriminator("global", "cleanup_expired_ticket")
+      );
+      expect(cleanup!.accounts.map(({ name }) => name)).to.deep.equal([
+        "user",
+        "ticket",
+        "round",
+      ]);
+      expect(cleanup!.accounts[0]).to.include({
+        signer: true,
+        writable: true,
+      });
+      expect(cleanup!.accounts[0].relations).to.deep.equal(["ticket"]);
+      expect(cleanup!.accounts[1].writable).to.equal(true);
+      expect(cleanup!.accounts[2].writable).not.to.equal(true);
+      expect(
+        cleanup!.accounts[1].pda?.seeds?.map(({ path }) => path)
+      ).to.deep.equal([undefined, "ticket.round_id", "user"]);
+      expect(
+        cleanup!.accounts[2].pda?.seeds?.map(({ path }) => path)
+      ).to.deep.equal([undefined, "ticket.round_id"]);
+      expect(cleanup!.args).to.deep.equal([]);
     });
 
     it("pins independent binding, identity PDA, and callback encoding vectors", async () => {
@@ -2192,10 +2321,10 @@ describe("lotto Phase 0-5", function () {
         it("rejects a canonical inactive Round with framework ConstraintRaw", async () => {
           const inactiveRoundId = activeRoundId.add(new anchor.BN(1));
           const inactive = roundPdas(inactiveRoundId);
-          const activeInfo = await provider.connection.getAccountInfo(
-            activeRound,
-            "confirmed"
-          );
+          const [activeInfo, inactiveInfo] = await Promise.all([
+            provider.connection.getAccountInfo(activeRound, "confirmed"),
+            provider.connection.getAccountInfo(inactive.round, "confirmed"),
+          ]);
           const active = await program.account.round.fetch(
             activeRound,
             "confirmed"
@@ -2212,22 +2341,41 @@ describe("lotto Phase 0-5", function () {
             executable: false,
           });
 
-          await expectRejectedWithoutChanges(
-            await program.methods
-              .requestRandomness()
-              .accountsStrict(requestAccounts({ round: inactive.round }))
-              .transaction(),
-            "ConstraintRaw",
-            [config, activeRound, inactive.round, activePrizeVault]
-          );
-          await expectRejectedWithoutChanges(
-            await program.methods
-              .settleRandomness()
-              .accountsStrict(settleAccounts({ round: inactive.round }))
-              .transaction(),
-            "ConstraintRaw",
-            [config, activeRound, inactive.round, activePrizeVault]
-          );
+          try {
+            await expectRejectedWithoutChanges(
+              await program.methods
+                .requestRandomness()
+                .accountsStrict(requestAccounts({ round: inactive.round }))
+                .transaction(),
+              "ConstraintRaw",
+              [config, activeRound, inactive.round, activePrizeVault]
+            );
+            await expectRejectedWithoutChanges(
+              await program.methods
+                .settleRandomness()
+                .accountsStrict(settleAccounts({ round: inactive.round }))
+                .transaction(),
+              "ConstraintRaw",
+              [config, activeRound, inactive.round, activePrizeVault]
+            );
+          } finally {
+            await setAccount(
+              inactive.round,
+              inactiveInfo === null
+                ? {
+                    lamports: 0,
+                    data: Buffer.alloc(0),
+                    owner: systemProgram,
+                    executable: false,
+                  }
+                : {
+                    lamports: inactiveInfo.lamports,
+                    data: inactiveInfo.data,
+                    owner: inactiveInfo.owner,
+                    executable: inactiveInfo.executable,
+                  }
+            );
+          }
         });
 
         it("uses the transition boundary now >= sale_deadline", async () => {
@@ -4085,6 +4233,1181 @@ describe("lotto Phase 0-5", function () {
           prizeBase
         );
       });
+    });
+
+    describe("Phase 6 round finalization and stale Ticket cleanup", function () {
+      const finalizeRoundInIdl = rawIdl.instructions.some(
+        ({ name }) => name === "finalize_round"
+      );
+      const cleanupInstruction = rawIdl.instructions.find(
+        ({ name }) => name === "cleanup_expired_ticket"
+      );
+      const cleanupHasCanonicalTicketSeeds =
+        cleanupInstruction?.accounts
+          .find(({ name }) => name === "ticket")
+          ?.pda?.seeds?.map(({ path }) => path)
+          .join("|") === "|ticket.round_id|user";
+
+      function phase6Builder(
+        name: "finalizeRound" | "cleanupExpiredTicket"
+      ): Phase6TransactionBuilder {
+        const method = (
+          program.methods as unknown as Record<
+            string,
+            (() => Phase6TransactionBuilder) | undefined
+          >
+        )[name];
+        if (method === undefined) {
+          throw new Error(`${name} is absent from the generated IDL`);
+        }
+        return method();
+      }
+
+      async function restoreAccount(
+        address: anchor.web3.PublicKey,
+        account: anchor.web3.AccountInfo<Buffer> | null
+      ) {
+        await setAccount(
+          address,
+          account === null
+            ? {
+                lamports: 0,
+                data: Buffer.alloc(0),
+                owner: systemProgram,
+                executable: false,
+              }
+            : {
+                lamports: account.lamports,
+                data: account.data,
+                owner: account.owner,
+                executable: account.executable,
+              }
+        );
+      }
+
+      async function expectAnyRejectedWithoutChanges(
+        transaction: anchor.web3.Transaction,
+        addresses: anchor.web3.PublicKey[],
+        signers: anchor.web3.Keypair[] = []
+      ) {
+        const before = await snapshot(addresses);
+        const receipt = await submitRecorded(transaction, signers);
+        expect(receipt.meta!.err).not.to.equal(null);
+        expect(await snapshot(addresses)).to.deep.equal(before);
+        return receipt;
+      }
+
+      (finalizeRoundInIdl ? describe : describe.skip)(
+        "fixture-assisted finalize_round transactions",
+        function () {
+          const unauthorizedFinalizer = anchor.web3.Keypair.generate();
+
+          function finalizeRoundAccounts(
+            overrides: Partial<{
+              authority: anchor.web3.PublicKey;
+              config: anchor.web3.PublicKey;
+              round: anchor.web3.PublicKey;
+              prizeVault: anchor.web3.PublicKey;
+              rolloverVault: anchor.web3.PublicKey;
+              treasury: anchor.web3.PublicKey;
+              systemProgram: anchor.web3.PublicKey;
+            }> = {}
+          ) {
+            return {
+              authority: provider.wallet.publicKey,
+              config,
+              round: activeRound,
+              prizeVault: activePrizeVault,
+              rolloverVault,
+              treasury: provider.wallet.publicKey,
+              systemProgram,
+              ...overrides,
+            };
+          }
+
+          async function submitFinalizeRound(
+            overrides: Partial<ReturnType<typeof finalizeRoundAccounts>> = {},
+            signers: anchor.web3.Keypair[] = [],
+            postInstructions: anchor.web3.TransactionInstruction[] = []
+          ) {
+            return submitRecorded(
+              await phase6Builder("finalizeRound")
+                .accountsStrict(finalizeRoundAccounts(overrides))
+                .postInstructions(postInstructions)
+                .transaction(),
+              signers
+            );
+          }
+
+          async function expectFinalizeRejected(
+            transaction: anchor.web3.Transaction,
+            code: string,
+            addresses: anchor.web3.PublicKey[],
+            signers: anchor.web3.Keypair[] = []
+          ) {
+            const treasuryBefore = await provider.connection.getBalance(
+              provider.wallet.publicKey,
+              "confirmed"
+            );
+            const receipt = await expectRejectedWithoutChanges(
+              transaction,
+              code,
+              addresses,
+              signers
+            );
+            expect(
+              (await provider.connection.getBalance(
+                provider.wallet.publicKey,
+                "confirmed"
+              )) - treasuryBefore
+            ).to.equal(-receipt.meta!.fee);
+            return receipt;
+          }
+
+          async function withFinalizableRound(
+            overrides: Record<string, unknown>,
+            vaultLamports: number,
+            operation: () => Promise<void>
+          ) {
+            const [configInfo, roundInfo, vaultInfo, rolloverInfo, current] =
+              await Promise.all([
+                provider.connection.getAccountInfo(config, "confirmed"),
+                provider.connection.getAccountInfo(activeRound, "confirmed"),
+                provider.connection.getAccountInfo(
+                  activePrizeVault,
+                  "confirmed"
+                ),
+                provider.connection.getAccountInfo(rolloverVault, "confirmed"),
+                program.account.round.fetch(activeRound, "confirmed"),
+              ]);
+            expect(configInfo).not.to.equal(null);
+            expect(roundInfo).not.to.equal(null);
+            expect(vaultInfo).not.to.equal(null);
+            expect(rolloverInfo).not.to.equal(null);
+            const data = await program.coder.accounts.encode("round", {
+              ...current,
+              ...overrides,
+            } as never);
+            await setAccount(activeRound, {
+              lamports: roundInfo!.lamports,
+              data,
+              owner: program.programId,
+              executable: false,
+            });
+            await setAccount(activePrizeVault, {
+              lamports: vaultLamports,
+              data: Buffer.alloc(0),
+              owner: systemProgram,
+              executable: false,
+            });
+            try {
+              await operation();
+            } finally {
+              await restoreAccount(config, configInfo);
+              await restoreAccount(activeRound, roundInfo);
+              await restoreAccount(activePrizeVault, vaultInfo);
+              await restoreAccount(rolloverVault, rolloverInfo);
+            }
+          }
+
+          function parsedFinalizeEvent(
+            receipt: Awaited<ReturnType<typeof submitRecorded>>
+          ) {
+            const parser = new anchor.EventParser(
+              program.programId,
+              program.coder
+            );
+            return Array.from(
+              parser.parseLogs(receipt.meta!.logMessages ?? [])
+            ).find(({ name }) => name === "roundFinalized");
+          }
+
+          before(async () => {
+            await provider.sendAndConfirm(
+              new anchor.web3.Transaction().add(
+                anchor.web3.SystemProgram.transfer({
+                  fromPubkey: provider.wallet.publicKey,
+                  toPubkey: unauthorizedFinalizer.publicKey,
+                  lamports: 1_000_000,
+                })
+              )
+            );
+          });
+
+          for (const [label, businessLamports] of [
+            ["rent-only Prize Vault", 0],
+            ["normal remaining business SOL", 10_000],
+            ["floor dust", 1],
+            ["unallocated BPS", 137],
+            ["zero-winner tier pool", 251],
+            ["expired unclaimed winner money", 509],
+            ["large remaining balance", 5_000_000],
+          ] as const) {
+            it(`finalizes ${label} using actual Vault cash and exact rent split`, async () => {
+              const now = await chainTimestamp();
+              await withFinalizableRound(
+                {
+                  status: { claiming: {} },
+                  claimDeadline: now.subn(1),
+                },
+                minimumRent + businessLamports,
+                async () => {
+                  const roundInfo = await provider.connection.getAccountInfo(
+                    activeRound,
+                    "confirmed"
+                  );
+                  expect(roundInfo).not.to.equal(null);
+                  const [rolloverBefore, treasuryBefore] = await Promise.all([
+                    provider.connection.getBalance(rolloverVault, "confirmed"),
+                    provider.connection.getBalance(
+                      provider.wallet.publicKey,
+                      "confirmed"
+                    ),
+                  ]);
+                  const receipt = await submitFinalizeRound();
+                  expect(
+                    receipt.meta!.err,
+                    receipt.meta!.logMessages?.join("\n")
+                  ).to.equal(null);
+                  const [configAfter, rolloverAfter, treasuryAfter] =
+                    await Promise.all([
+                      program.account.lottoConfig.fetch(config, "confirmed"),
+                      provider.connection.getBalance(
+                        rolloverVault,
+                        "confirmed"
+                      ),
+                      provider.connection.getBalance(
+                        provider.wallet.publicKey,
+                        "confirmed"
+                      ),
+                    ]);
+                  expect(configAfter.activeRoundId).to.equal(null);
+                  expect(
+                    await provider.connection.getBalance(
+                      activeRound,
+                      "confirmed"
+                    )
+                  ).to.equal(0);
+                  expect(
+                    await provider.connection.getBalance(
+                      activePrizeVault,
+                      "confirmed"
+                    )
+                  ).to.equal(0);
+                  expect(rolloverAfter - rolloverBefore).to.equal(
+                    businessLamports
+                  );
+                  expect(treasuryAfter - treasuryBefore).to.equal(
+                    minimumRent + roundInfo!.lamports - receipt.meta!.fee
+                  );
+                  const event = parsedFinalizeEvent(receipt);
+                  expect(event).not.to.equal(undefined);
+                  const data = event!.data as {
+                    roundId: anchor.BN;
+                    rolloverOut: anchor.BN;
+                  };
+                  expect(data.roundId.eq(activeRoundId)).to.equal(true);
+                  expect(data.rolloverOut.toNumber()).to.equal(
+                    businessLamports
+                  );
+                }
+              );
+            });
+          }
+
+          it("accepts the exact claim deadline", async () => {
+            const deadline = (await chainTimestamp()).addn(10);
+            await withFinalizableRound(
+              { status: { claiming: {} }, claimDeadline: deadline },
+              minimumRent,
+              async () => {
+                await setChainTime(deadline);
+                const receipt = await submitFinalizeRound();
+                expect(
+                  receipt.meta!.err,
+                  receipt.meta!.logMessages?.join("\n")
+                ).to.equal(null);
+              }
+            );
+          });
+
+          it("rejects before the claim deadline with ClaimStillOpen and full rollback", async () => {
+            const now = await chainTimestamp();
+            await withFinalizableRound(
+              {
+                status: { claiming: {} },
+                claimDeadline: now.addn(1_000),
+              },
+              minimumRent + 123,
+              async () => {
+                await expectFinalizeRejected(
+                  await phase6Builder("finalizeRound")
+                    .accountsStrict(finalizeRoundAccounts())
+                    .transaction(),
+                  "ClaimStillOpen",
+                  [config, activeRound, activePrizeVault, rolloverVault]
+                );
+              }
+            );
+          });
+
+          it("rejects a non-Claiming Round with RoundNotClaiming", async () => {
+            const now = await chainTimestamp();
+            await withFinalizableRound(
+              {
+                status: { registering: {} },
+                claimDeadline: now.subn(1),
+              },
+              minimumRent + 123,
+              async () => {
+                await expectFinalizeRejected(
+                  await phase6Builder("finalizeRound")
+                    .accountsStrict(finalizeRoundAccounts())
+                    .transaction(),
+                  "RoundNotClaiming",
+                  [config, activeRound, activePrizeVault, rolloverVault]
+                );
+              }
+            );
+          });
+
+          it("rejects a non-Config authority with ConstraintHasOne", async () => {
+            const now = await chainTimestamp();
+            await withFinalizableRound(
+              {
+                status: { claiming: {} },
+                claimDeadline: now.subn(1),
+              },
+              minimumRent + 123,
+              async () => {
+                await expectFinalizeRejected(
+                  await phase6Builder("finalizeRound")
+                    .accountsStrict(
+                      finalizeRoundAccounts({
+                        authority: unauthorizedFinalizer.publicKey,
+                      })
+                    )
+                    .transaction(),
+                  "ConstraintHasOne",
+                  [config, activeRound, activePrizeVault, rolloverVault],
+                  [unauthorizedFinalizer]
+                );
+              }
+            );
+          });
+
+          it("rejects an inactive canonical Round with ConstraintRaw", async () => {
+            const now = await chainTimestamp();
+            await withFinalizableRound(
+              {
+                status: { claiming: {} },
+                claimDeadline: now.subn(1),
+              },
+              minimumRent + 123,
+              async () => {
+                const configInfo = await provider.connection.getAccountInfo(
+                  config,
+                  "confirmed"
+                );
+                const current = await program.account.lottoConfig.fetch(
+                  config,
+                  "confirmed"
+                );
+                expect(configInfo).not.to.equal(null);
+                const data = await program.coder.accounts.encode(
+                  "lottoConfig",
+                  {
+                    ...current,
+                    activeRoundId: activeRoundId.addn(1),
+                  } as never
+                );
+                await setAccount(config, {
+                  lamports: configInfo!.lamports,
+                  data,
+                  owner: program.programId,
+                  executable: false,
+                });
+                await expectFinalizeRejected(
+                  await phase6Builder("finalizeRound")
+                    .accountsStrict(finalizeRoundAccounts())
+                    .transaction(),
+                  "ConstraintRaw",
+                  [config, activeRound, activePrizeVault, rolloverVault]
+                );
+              }
+            );
+          });
+
+          for (const [label, overrides, code] of [
+            [
+              "Prize Vault",
+              { prizeVault: substituteSystemAccount },
+              "ConstraintSeeds",
+            ],
+            [
+              "Rollover Vault",
+              { rolloverVault: substituteSystemAccount },
+              "ConstraintSeeds",
+            ],
+            [
+              "Treasury",
+              { treasury: substituteSystemAccount },
+              "ConstraintAddress",
+            ],
+          ] as const) {
+            it(`rejects a wrong ${label} without partial finalization`, async () => {
+              const now = await chainTimestamp();
+              await withFinalizableRound(
+                {
+                  status: { claiming: {} },
+                  claimDeadline: now.subn(1),
+                },
+                minimumRent + 123,
+                async () => {
+                  await expectFinalizeRejected(
+                    await phase6Builder("finalizeRound")
+                      .accountsStrict(
+                        finalizeRoundAccounts(
+                          overrides as Partial<
+                            ReturnType<typeof finalizeRoundAccounts>
+                          >
+                        )
+                      )
+                      .transaction(),
+                    code,
+                    [config, activeRound, activePrizeVault, rolloverVault]
+                  );
+                }
+              );
+            });
+          }
+
+          it("rejects an under-rent Prize Vault with ArithmeticError and rollback", async () => {
+            const now = await chainTimestamp();
+            await withFinalizableRound(
+              {
+                status: { claiming: {} },
+                claimDeadline: now.subn(1),
+              },
+              minimumRent - 1,
+              async () => {
+                await expectFinalizeRejected(
+                  await phase6Builder("finalizeRound")
+                    .accountsStrict(finalizeRoundAccounts())
+                    .transaction(),
+                  "ArithmeticError",
+                  [config, activeRound, activePrizeVault, rolloverVault]
+                );
+              }
+            );
+          });
+
+          it("rolls back the complete finalization when a later instruction fails", async () => {
+            const now = await chainTimestamp();
+            await withFinalizableRound(
+              {
+                status: { claiming: {} },
+                claimDeadline: now.subn(1),
+              },
+              minimumRent + 123,
+              async () => {
+                const watched = [
+                  config,
+                  activeRound,
+                  activePrizeVault,
+                  rolloverVault,
+                ];
+                const before = await snapshot(watched);
+                const treasuryBefore = await provider.connection.getBalance(
+                  provider.wallet.publicKey,
+                  "confirmed"
+                );
+                const receipt = await submitFinalizeRound(
+                  {},
+                  [],
+                  [
+                    anchor.web3.SystemProgram.transfer({
+                      fromPubkey: provider.wallet.publicKey,
+                      toPubkey: substituteSystemAccount,
+                      lamports: Number.MAX_SAFE_INTEGER,
+                    }),
+                  ]
+                );
+                expect(receipt.meta!.err).not.to.equal(null);
+                expect(receipt.meta!.logMessages).to.include(
+                  `Program ${program.programId.toBase58()} success`
+                );
+                expect(await snapshot(watched)).to.deep.equal(before);
+                expect(
+                  (await provider.connection.getBalance(
+                    provider.wallet.publicKey,
+                    "confirmed"
+                  )) - treasuryBefore
+                ).to.equal(-receipt.meta!.fee);
+              }
+            );
+          });
+
+          it("cannot finalize the same closed Round twice", async () => {
+            const now = await chainTimestamp();
+            await withFinalizableRound(
+              {
+                status: { claiming: {} },
+                claimDeadline: now.subn(1),
+              },
+              minimumRent + 123,
+              async () => {
+                const first = await submitFinalizeRound();
+                expect(first.meta!.err).to.equal(null);
+                const rolloverAfterFirst = await provider.connection.getBalance(
+                  rolloverVault,
+                  "confirmed"
+                );
+                const second = await submitFinalizeRound();
+                expectReceiptError(second, "AccountNotInitialized");
+                expect(
+                  await provider.connection.getBalance(
+                    rolloverVault,
+                    "confirmed"
+                  )
+                ).to.equal(rolloverAfterFirst);
+              }
+            );
+          });
+
+          it("integrates with existing create_round after clearing the active pointer", async () => {
+            const now = await chainTimestamp();
+            await withFinalizableRound(
+              {
+                status: { claiming: {} },
+                claimDeadline: now.subn(1),
+              },
+              minimumRent + 777,
+              async () => {
+                const before = await program.account.lottoConfig.fetch(config);
+                const next = roundPdas(before.nextRoundId);
+                const [nextRoundInfo, nextVaultInfo] = await Promise.all([
+                  provider.connection.getAccountInfo(next.round, "confirmed"),
+                  provider.connection.getAccountInfo(
+                    next.prizeVault,
+                    "confirmed"
+                  ),
+                ]);
+                try {
+                  const finalization = await submitFinalizeRound();
+                  expect(finalization.meta!.err).to.equal(null);
+                  const creation = await submitRecorded(
+                    await program.methods
+                      .createRound()
+                      .accountsStrict(createAccounts(before.nextRoundId))
+                      .transaction()
+                  );
+                  expect(
+                    creation.meta!.err,
+                    creation.meta!.logMessages?.join("\n")
+                  ).to.equal(null);
+                  const after = await program.account.lottoConfig.fetch(config);
+                  expect(after.activeRoundId!.eq(before.nextRoundId)).to.equal(
+                    true
+                  );
+                  expect(
+                    await provider.connection.getBalance(rolloverVault)
+                  ).to.equal(minimumRent);
+                  expect(
+                    await provider.connection.getBalance(next.prizeVault)
+                  ).to.equal(minimumRent + 777);
+                } finally {
+                  await restoreAccount(next.round, nextRoundInfo);
+                  await restoreAccount(next.prizeVault, nextVaultInfo);
+                }
+              }
+            );
+          });
+        }
+      );
+
+      (cleanupHasCanonicalTicketSeeds ? describe : describe.skip)(
+        "fixture-assisted cleanup_expired_ticket transactions",
+        function () {
+          type CleanupOutcome = "unregistered" | "winner";
+          const cleanupUsers = Array.from({ length: 22 }, () =>
+            anchor.web3.Keypair.generate()
+          );
+
+          function cleanupAccounts(
+            user: anchor.web3.PublicKey,
+            overrides: Partial<{
+              user: anchor.web3.PublicKey;
+              ticket: anchor.web3.PublicKey;
+              round: anchor.web3.PublicKey;
+            }> = {}
+          ) {
+            return {
+              user,
+              ticket: ticketPda(user).ticket,
+              round: activeRound,
+              ...overrides,
+            };
+          }
+
+          async function submitCleanup(
+            user: anchor.web3.Keypair,
+            overrides: Partial<ReturnType<typeof cleanupAccounts>> = {},
+            postInstructions: anchor.web3.TransactionInstruction[] = []
+          ) {
+            return submitRecorded(
+              await phase6Builder("cleanupExpiredTicket")
+                .accountsStrict(cleanupAccounts(user.publicKey, overrides))
+                .postInstructions(postInstructions)
+                .transaction(),
+              [user]
+            );
+          }
+
+          async function putCleanupTicket(
+            user: anchor.web3.PublicKey,
+            outcome: CleanupOutcome
+          ) {
+            const { ticket, bump } = ticketPda(user);
+            const encoded = await program.coder.accounts.encode("ticket", {
+              user,
+              roundId: activeRoundId,
+              quantity: 1,
+              outcome:
+                outcome === "unregistered"
+                  ? { unregistered: {} }
+                  : { winner: [{ tier0: {} }] },
+              bump,
+            } as never);
+            const data = Buffer.alloc(program.account.ticket.size);
+            encoded.copy(data);
+            await setAccount(ticket, {
+              lamports: ticketRent,
+              data,
+              owner: program.programId,
+              executable: false,
+            });
+            return ticket;
+          }
+
+          async function withCleanupTicket(
+            user: anchor.web3.PublicKey,
+            outcome: CleanupOutcome,
+            operation: (ticket: anchor.web3.PublicKey) => Promise<void>
+          ) {
+            const ticket = ticketPda(user).ticket;
+            const original = await provider.connection.getAccountInfo(
+              ticket,
+              "confirmed"
+            );
+            await putCleanupTicket(user, outcome);
+            try {
+              await operation(ticket);
+            } finally {
+              await restoreAccount(ticket, original);
+            }
+          }
+
+          async function withLiveCleanupRound(
+            overrides: Record<string, unknown>,
+            operation: () => Promise<void>
+          ) {
+            const [roundInfo, current] = await Promise.all([
+              provider.connection.getAccountInfo(activeRound, "confirmed"),
+              program.account.round.fetch(activeRound, "confirmed"),
+            ]);
+            expect(roundInfo).not.to.equal(null);
+            const data = await program.coder.accounts.encode("round", {
+              ...current,
+              ...overrides,
+            } as never);
+            await setAccount(activeRound, {
+              lamports: roundInfo!.lamports,
+              data,
+              owner: program.programId,
+              executable: false,
+            });
+            try {
+              await operation();
+            } finally {
+              await restoreAccount(activeRound, roundInfo);
+            }
+          }
+
+          async function withClosedCleanupRound(
+            operation: () => Promise<void>
+          ) {
+            const original = await provider.connection.getAccountInfo(
+              activeRound,
+              "confirmed"
+            );
+            await setAccount(activeRound, {
+              lamports: 0,
+              data: Buffer.alloc(0),
+              owner: systemProgram,
+              executable: false,
+            });
+            try {
+              await operation();
+            } finally {
+              await restoreAccount(activeRound, original);
+            }
+          }
+
+          async function expectCleanupSuccess(
+            user: anchor.web3.Keypair,
+            ticket: anchor.web3.PublicKey
+          ) {
+            const [userBefore, treasuryBefore, vaultBefore] = await Promise.all(
+              [
+                provider.connection.getBalance(user.publicKey, "confirmed"),
+                provider.connection.getBalance(
+                  provider.wallet.publicKey,
+                  "confirmed"
+                ),
+                snapshot([activePrizeVault]),
+              ]
+            );
+            const receipt = await submitCleanup(user);
+            expect(
+              receipt.meta!.err,
+              receipt.meta!.logMessages?.join("\n")
+            ).to.equal(null);
+            expect(
+              (await provider.connection.getBalance(
+                user.publicKey,
+                "confirmed"
+              )) - userBefore
+            ).to.equal(ticketRent);
+            expect(
+              (await provider.connection.getBalance(
+                provider.wallet.publicKey,
+                "confirmed"
+              )) - treasuryBefore
+            ).to.equal(-receipt.meta!.fee);
+            expect(await provider.connection.getAccountInfo(ticket)).to.equal(
+              null
+            );
+            expect(await snapshot([activePrizeVault])).to.deep.equal(
+              vaultBefore
+            );
+          }
+
+          async function expectCleanupRejected(
+            user: anchor.web3.Keypair,
+            ticket: anchor.web3.PublicKey
+          ) {
+            await expectAnyRejectedWithoutChanges(
+              await phase6Builder("cleanupExpiredTicket")
+                .accountsStrict(cleanupAccounts(user.publicKey))
+                .transaction(),
+              [ticket, activeRound, activePrizeVault, user.publicKey],
+              [user]
+            );
+          }
+
+          before(async () => {
+            for (let offset = 0; offset < cleanupUsers.length; offset += 8) {
+              await provider.sendAndConfirm(
+                new anchor.web3.Transaction().add(
+                  ...cleanupUsers.slice(offset, offset + 8).map((user) =>
+                    anchor.web3.SystemProgram.transfer({
+                      fromPubkey: provider.wallet.publicKey,
+                      toPubkey: user.publicKey,
+                      lamports: 1_000_000,
+                    })
+                  )
+                )
+              );
+            }
+          });
+
+          for (const [label, status] of [
+            ["Selling", { selling: {} }],
+            ["RandomnessPending", { randomnessPending: {} }],
+          ] as const) {
+            it(`rejects an Unregistered Ticket while the Round is ${label}`, async () => {
+              const user = cleanupUsers[label === "Selling" ? 0 : 1];
+              await withCleanupTicket(
+                user.publicKey,
+                "unregistered",
+                async (ticket) => {
+                  await withLiveCleanupRound({ status }, async () => {
+                    await expectCleanupRejected(user, ticket);
+                  });
+                }
+              );
+            });
+          }
+
+          it("rejects an Unregistered Ticket before the registration deadline", async () => {
+            const user = cleanupUsers[2];
+            const now = await chainTimestamp();
+            await withCleanupTicket(
+              user.publicKey,
+              "unregistered",
+              async (ticket) => {
+                await withLiveCleanupRound(
+                  {
+                    status: { registering: {} },
+                    registrationDeadline: now.addn(1_000),
+                  },
+                  async () => expectCleanupRejected(user, ticket)
+                );
+              }
+            );
+          });
+
+          it("cleans an Unregistered Ticket after the registration deadline", async () => {
+            const user = cleanupUsers[3];
+            const now = await chainTimestamp();
+            await withCleanupTicket(
+              user.publicKey,
+              "unregistered",
+              async (ticket) => {
+                await withLiveCleanupRound(
+                  {
+                    status: { registering: {} },
+                    registrationDeadline: now.subn(1),
+                  },
+                  async () => expectCleanupSuccess(user, ticket)
+                );
+              }
+            );
+          });
+
+          it("protects a Winner Ticket throughout Registering", async () => {
+            const user = cleanupUsers[4];
+            const now = await chainTimestamp();
+            await withCleanupTicket(
+              user.publicKey,
+              "winner",
+              async (ticket) => {
+                await withLiveCleanupRound(
+                  {
+                    status: { registering: {} },
+                    registrationDeadline: now.subn(1),
+                  },
+                  async () => expectCleanupRejected(user, ticket)
+                );
+              }
+            );
+          });
+
+          it("cleans an Unregistered Ticket before the claim deadline", async () => {
+            const user = cleanupUsers[5];
+            const now = await chainTimestamp();
+            await withCleanupTicket(
+              user.publicKey,
+              "unregistered",
+              async (ticket) => {
+                await withLiveCleanupRound(
+                  {
+                    status: { claiming: {} },
+                    claimDeadline: now.addn(1_000),
+                  },
+                  async () => expectCleanupSuccess(user, ticket)
+                );
+              }
+            );
+          });
+
+          it("protects a Winner Ticket before the claim deadline", async () => {
+            const user = cleanupUsers[6];
+            const now = await chainTimestamp();
+            await withCleanupTicket(
+              user.publicKey,
+              "winner",
+              async (ticket) => {
+                await withLiveCleanupRound(
+                  {
+                    status: { claiming: {} },
+                    claimDeadline: now.addn(1_000),
+                  },
+                  async () => {
+                    await expectRejectedWithoutChanges(
+                      await phase6Builder("cleanupExpiredTicket")
+                        .accountsStrict(cleanupAccounts(user.publicKey))
+                        .transaction(),
+                      "ClaimStillOpen",
+                      [ticket, activeRound, activePrizeVault, user.publicKey],
+                      [user]
+                    );
+                  }
+                );
+              }
+            );
+          });
+
+          for (const [label, outcome, offset] of [
+            ["Unregistered", "unregistered", 7],
+            ["Winner", "winner", 8],
+          ] as const) {
+            it(`cleans a ${label} Ticket at the exact claim deadline`, async () => {
+              const user = cleanupUsers[offset];
+              const deadline = (await chainTimestamp()).addn(10);
+              await withCleanupTicket(
+                user.publicKey,
+                outcome,
+                async (ticket) => {
+                  await withLiveCleanupRound(
+                    {
+                      status: { claiming: {} },
+                      claimDeadline: deadline,
+                    },
+                    async () => {
+                      await setChainTime(deadline);
+                      await expectCleanupSuccess(user, ticket);
+                    }
+                  );
+                }
+              );
+            });
+          }
+
+          for (const [label, outcome, offset] of [
+            ["Unregistered", "unregistered", 19],
+            ["Winner", "winner", 20],
+          ] as const) {
+            it(`cleans a ${label} Ticket after the claim deadline`, async () => {
+              const user = cleanupUsers[offset];
+              const now = await chainTimestamp();
+              await withCleanupTicket(
+                user.publicKey,
+                outcome,
+                async (ticket) => {
+                  await withLiveCleanupRound(
+                    {
+                      status: { claiming: {} },
+                      claimDeadline: now.subn(1),
+                    },
+                    async () => expectCleanupSuccess(user, ticket)
+                  );
+                }
+              );
+            });
+          }
+
+          for (const [label, outcome, offset] of [
+            ["Unregistered", "unregistered", 9],
+            ["Winner", "winner", 10],
+          ] as const) {
+            it(`cleans a ${label} Ticket after the canonical Round is closed`, async () => {
+              const user = cleanupUsers[offset];
+              await withCleanupTicket(
+                user.publicKey,
+                outcome,
+                async (ticket) => {
+                  await withClosedCleanupRound(async () => {
+                    await expectCleanupSuccess(user, ticket);
+                  });
+                }
+              );
+            });
+          }
+
+          it("rejects a wrong Player and cannot redirect Ticket rent", async () => {
+            const owner = cleanupUsers[11];
+            const attacker = cleanupUsers[12];
+            const now = await chainTimestamp();
+            await withCleanupTicket(
+              owner.publicKey,
+              "unregistered",
+              async (ticket) => {
+                await withLiveCleanupRound(
+                  {
+                    status: { claiming: {} },
+                    claimDeadline: now.subn(1),
+                  },
+                  async () => {
+                    await expectRejectedWithoutChanges(
+                      await phase6Builder("cleanupExpiredTicket")
+                        .accountsStrict(
+                          cleanupAccounts(attacker.publicKey, { ticket })
+                        )
+                        .transaction(),
+                      "ConstraintSeeds",
+                      [ticket, activeRound, activePrizeVault, owner.publicKey],
+                      [attacker]
+                    );
+                  }
+                );
+              }
+            );
+          });
+
+          it("rejects a wrong Ticket", async () => {
+            const user = cleanupUsers[13];
+            const other = cleanupUsers[14];
+            const now = await chainTimestamp();
+            await withCleanupTicket(
+              user.publicKey,
+              "unregistered",
+              async (ticket) => {
+                await withCleanupTicket(
+                  other.publicKey,
+                  "unregistered",
+                  async (otherTicket) => {
+                    await withLiveCleanupRound(
+                      {
+                        status: { claiming: {} },
+                        claimDeadline: now.subn(1),
+                      },
+                      async () => {
+                        await expectRejectedWithoutChanges(
+                          await phase6Builder("cleanupExpiredTicket")
+                            .accountsStrict(
+                              cleanupAccounts(user.publicKey, {
+                                ticket: otherTicket,
+                              })
+                            )
+                            .transaction(),
+                          "ConstraintSeeds",
+                          [
+                            ticket,
+                            otherTicket,
+                            activeRound,
+                            activePrizeVault,
+                            user.publicKey,
+                          ],
+                          [user]
+                        );
+                      }
+                    );
+                  }
+                );
+              }
+            );
+          });
+
+          it("rejects a wrong Round PDA and an arbitrary fake closed account", async () => {
+            const user = cleanupUsers[15];
+            await withCleanupTicket(
+              user.publicKey,
+              "unregistered",
+              async (ticket) => {
+                for (const suppliedRound of [
+                  roundPdas(activeRoundId.addn(1)).round,
+                  substituteSystemAccount,
+                ]) {
+                  await expectRejectedWithoutChanges(
+                    await phase6Builder("cleanupExpiredTicket")
+                      .accountsStrict(
+                        cleanupAccounts(user.publicKey, {
+                          round: suppliedRound,
+                        })
+                      )
+                      .transaction(),
+                    "ConstraintSeeds",
+                    [ticket, activeRound, activePrizeVault, user.publicKey],
+                    [user]
+                  );
+                }
+              }
+            );
+          });
+
+          it("rejects malformed program-owned data at the canonical Round PDA", async () => {
+            const user = cleanupUsers[16];
+            const originalRound = await provider.connection.getAccountInfo(
+              activeRound,
+              "confirmed"
+            );
+            expect(originalRound).not.to.equal(null);
+            await withCleanupTicket(
+              user.publicKey,
+              "unregistered",
+              async (ticket) => {
+                await setAccount(activeRound, {
+                  lamports: originalRound!.lamports,
+                  data: Buffer.alloc(8),
+                  owner: program.programId,
+                  executable: false,
+                });
+                try {
+                  await expectCleanupRejected(user, ticket);
+                } finally {
+                  await restoreAccount(activeRound, originalRound);
+                }
+              }
+            );
+          });
+
+          it("rejects cleanup replay through framework account validation", async () => {
+            const user = cleanupUsers[17];
+            const now = await chainTimestamp();
+            await withCleanupTicket(
+              user.publicKey,
+              "unregistered",
+              async (ticket) => {
+                await withLiveCleanupRound(
+                  {
+                    status: { claiming: {} },
+                    claimDeadline: now.subn(1),
+                  },
+                  async () => {
+                    const first = await submitCleanup(user);
+                    expect(first.meta!.err).to.equal(null);
+                    const afterFirst = await provider.connection.getBalance(
+                      user.publicKey,
+                      "confirmed"
+                    );
+                    const replay = await submitCleanup(user);
+                    expectReceiptError(replay, "AccountNotInitialized");
+                    expect(
+                      await provider.connection.getBalance(
+                        user.publicKey,
+                        "confirmed"
+                      )
+                    ).to.equal(afterFirst);
+                    expect(
+                      await provider.connection.getAccountInfo(ticket)
+                    ).to.equal(null);
+                  }
+                );
+              }
+            );
+          });
+
+          it("rolls back Ticket close and rent movement when a later instruction fails", async () => {
+            const user = cleanupUsers[18];
+            const now = await chainTimestamp();
+            await withCleanupTicket(
+              user.publicKey,
+              "unregistered",
+              async (ticket) => {
+                await withLiveCleanupRound(
+                  {
+                    status: { claiming: {} },
+                    claimDeadline: now.subn(1),
+                  },
+                  async () => {
+                    const watched = [
+                      ticket,
+                      activeRound,
+                      activePrizeVault,
+                      user.publicKey,
+                    ];
+                    const before = await snapshot(watched);
+                    const receipt = await submitCleanup(user, {}, [
+                      anchor.web3.SystemProgram.transfer({
+                        fromPubkey: provider.wallet.publicKey,
+                        toPubkey: substituteSystemAccount,
+                        lamports: Number.MAX_SAFE_INTEGER,
+                      }),
+                    ]);
+                    expect(receipt.meta!.err).not.to.equal(null);
+                    expect(receipt.meta!.logMessages).to.include(
+                      `Program ${program.programId.toBase58()} success`
+                    );
+                    expect(await snapshot(watched)).to.deep.equal(before);
+                  }
+                );
+              }
+            );
+          });
+        }
+      );
     });
   });
 });

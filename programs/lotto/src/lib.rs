@@ -58,4 +58,12 @@ pub mod lotto {
     pub fn claim_prize(ctx: Context<ClaimPrize>) -> Result<()> {
         handle_claim_prize(ctx)
     }
+
+    pub fn finalize_round(ctx: Context<FinalizeRound>) -> Result<()> {
+        handle_finalize_round(ctx)
+    }
+
+    pub fn cleanup_expired_ticket(ctx: Context<CleanupExpiredTicket>) -> Result<()> {
+        handle_cleanup_expired_ticket(ctx)
+    }
 }

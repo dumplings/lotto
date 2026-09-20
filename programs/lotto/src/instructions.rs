@@ -1,7 +1,9 @@
 pub mod buy_ticket;
 pub mod claim_prize;
+pub mod cleanup_expired_ticket;
 pub mod create_round;
 pub mod finalize_registration;
+pub mod finalize_round;
 pub mod initialize_config;
 pub mod receive_randomness;
 pub mod register_winner;
@@ -11,8 +13,10 @@ pub mod update_config;
 
 pub use buy_ticket::*;
 pub use claim_prize::*;
+pub use cleanup_expired_ticket::*;
 pub use create_round::*;
 pub use finalize_registration::*;
+pub use finalize_round::*;
 pub use initialize_config::*;
 pub use receive_randomness::*;
 pub use register_winner::*;
