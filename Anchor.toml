@@ -14,6 +14,8 @@ wallet = "~/.config/solana/id.json"
 
 [scripts]
 test = "pnpm exec ts-mocha -p ./tsconfig.json -t 1000000 \"tests/**/*.ts\""
+test-v2 = "pnpm exec ts-mocha -p ./tsconfig.json -t 1000000 --grep \"^(?!.*Phase [3-6]).*$\" \"tests/**/*.ts\""
+test-v2-new-ticket = "pnpm exec ts-mocha -p ./tsconfig.json -t 1000000 --grep \"(initializes the canonical Config and Rollover Vault at the boundaries|creates the canonical Round and vault, snapshots Config, and transfers only rollover business SOL|allows ComputeBudget instructions before the payment transfer|keeps the Round snapshot after Config repricing and charges P1|initializes a third-party-prefunded System-owned Ticket PDA|rejects a stale New-Ticket quote and rolls back its transfer|cannot consume one valid transfer with two buyTicketV2 calls)\" \"tests/**/*.ts\""
 
 [hooks]
 

@@ -845,7 +845,9 @@ name = "lotto"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "bincode",
  "ephemeral-vrf-sdk",
+ "solana-instructions-sysvar",
  "solana-sha256-hasher",
 ]
 

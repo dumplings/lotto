@@ -2,50 +2,87 @@ use anchor_lang::prelude::*;
 
 #[error_code]
 pub enum LottoError {
-    #[msg("TicketPrice 需大于 0")]
+    #[msg("TicketPrice 必须大于 0")]
     InvalidTicketPrice,
-    #[msg("TierThresholds 需递增且处于 1..256")]
+
+    #[msg("TierThresholds 必须严格递增，且每项位于 1..=256")]
     InvalidTierThresholds,
-    #[msg("TierPoolBPS 总和不能大于 10,000")]
+
+    #[msg("TierPoolBPS 总和不能超过 10,000")]
     InvalidTierPoolBps,
-    #[msg("当前 signer 不是 Program upgrade authority，无权初始化 Config")]
+
+    #[msg("当前 signer 不是 Program Upgrade Authority，不能初始化 Config")]
     UnauthorizedInitializer,
-    #[msg("存在已激活 Round")]
+
+    #[msg("当前已有激活中的 Round")]
     ActiveRoundExists,
-    #[msg("Checked arithmetic operation failed")]
+
+    #[msg("算术运算失败")]
     ArithmeticError,
-    #[msg("Ticket quantity 需大于 0")]
+
+    #[msg("Ticket quantity 必须大于 0")]
     InvalidTicketQuantity,
-    #[msg("Round is not in Selling state")]
+
+    #[msg("Round 当前不处于 Selling 状态")]
     RoundNotSelling,
-    #[msg("售票已关闭")]
+
+    #[msg("售票窗口已关闭")]
     SaleClosed,
-    #[msg("当前仍处于销售期")]
+
+    #[msg("售票窗口仍未结束")]
     SaleStillOpen,
-    #[msg("Randomness 状态已就位")]
+
+    #[msg("Randomness 已经就绪")]
     RandomnessAlreadyReady,
-    #[msg("Round is not waiting for randomness")]
+
+    #[msg("Round 当前不处于 RandomnessPending 状态")]
     RoundNotRandomnessPending,
-    #[msg("Randomness has not been received yet")]
+
+    #[msg("Randomness 尚未就绪")]
     RandomnessNotReady,
-    #[msg("Randomness callback binding does not match the round")]
+
+    #[msg("Randomness callback binding 与当前 Round 不匹配")]
     RandomnessBindingMismatch,
-    #[msg("Round is not in registration phase")]
+
+    #[msg("Round 当前不处于 Registering 状态")]
     RoundNotRegistering,
-    #[msg("Registration window is closed")]
+
+    #[msg("登记窗口已关闭")]
     RegistrationClosed,
-    #[msg("Ticket has already been registered")]
+
+    #[msg("Ticket 已完成登记，不能重复登记")]
     TicketAlreadyRegistered,
-    #[msg("Registration window is still open")]
+
+    #[msg("登记窗口仍未结束")]
     RegistrationStillOpen,
-    #[msg("Round is not in Claiming phase")]
+
+    #[msg("Round 当前不处于 Claiming 状态")]
     RoundNotClaiming,
-    #[msg("Claim window has closed")]
+
+    #[msg("兑奖窗口已关闭")]
     ClaimClosed,
-    #[msg("Ticket is not a registered winner")]
+
+    #[msg("Ticket 不是已登记的中奖 Ticket")]
     TicketNotWinner,
-    #[msg("Claim window is still open")]
+
+    #[msg("兑奖窗口仍未结束")]
     ClaimStillOpen,
-    #[msg("Round account is neither a valid live Round nor a valid closed Round")]
+
+    #[msg("Round account 既不是有效的 live Round，也不是有效的 closed Round")]
     RoundCleanupStateInvalid,
+
+    #[msg("上一条 instruction 不是有效的购票付款 instruction")]
+    InvalidPaymentInstruction,
+
+    #[msg("付款来源与 buyer 不匹配")]
+    PaymentSourceMismatch,
+
+    #[msg("付款目标与 Prize Vault 不匹配")]
+    PaymentDestinationMismatch,
+
+    #[msg("付款金额与当前应付金额不匹配")]
+    PaymentAmountMismatch,
+
+    #[msg("Ticket account 当前状态无效")]
+    InvalidTicketAccountState,
 }

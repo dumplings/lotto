@@ -27,8 +27,8 @@ pub mod lotto {
         handle_create_round(ctx)
     }
 
-    pub fn buy_ticket(ctx: Context<BuyTicket>, quantity: u32) -> Result<()> {
-        handle_buy_ticket(ctx, quantity)
+    pub fn buy_ticket_v2(ctx: Context<BuyTicketV2>, buyer: Pubkey, quantity: u32) -> Result<()> {
+        handle_buy_ticket_v2(ctx, buyer, quantity)
     }
 
     pub fn receive_randomness(

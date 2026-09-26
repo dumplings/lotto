@@ -1,4 +1,5 @@
 pub mod buy_ticket;
+pub mod buy_ticket_v2;
 pub mod claim_prize;
 pub mod cleanup_expired_ticket;
 pub mod create_round;
@@ -12,6 +13,7 @@ pub mod settle_randomness;
 pub mod update_config;
 
 pub use buy_ticket::*;
+pub use buy_ticket_v2::*;
 pub use claim_prize::*;
 pub use cleanup_expired_ticket::*;
 pub use create_round::*;

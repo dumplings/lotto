@@ -48,6 +48,7 @@ type RawIdl = {
   accounts?: Array<{ name: string }>;
   events?: Array<{ name: string; discriminator: number[] }>;
   types?: RawIdlType[];
+  constants?: Array<{ name: string; type: unknown; value: string }>;
   errors?: Array<{ code: number; name: string; msg: string }>;
 };
 type MethodCall = {
@@ -315,7 +316,7 @@ describe("lotto Phase 0-6", function () {
       );
       expect(rawIdl.address).to.equal(program.programId.toBase58());
       expect(rawIdl.instructions.map(({ name }) => name)).to.deep.equal([
-        "buy_ticket",
+        "buy_ticket_v2",
         "claim_prize",
         "cleanup_expired_ticket",
         "create_round",
@@ -329,7 +330,7 @@ describe("lotto Phase 0-6", function () {
         "update_config",
       ]);
       expect(program.idl.instructions.map(({ name }) => name)).to.deep.equal([
-        "buyTicket",
+        "buyTicketV2",
         "claimPrize",
         "cleanupExpiredTicket",
         "createRound",
@@ -373,7 +374,7 @@ describe("lotto Phase 0-6", function () {
       const instruction = (name: string) =>
         rawIdl.instructions.find((item) => item.name === name)!;
       const create = instruction("create_round");
-      const buy = instruction("buy_ticket");
+      const buy = instruction("buy_ticket_v2");
       expect(create.accounts.map(({ name }) => name)).to.deep.equal([
         "authority",
         "config",
@@ -385,13 +386,32 @@ describe("lotto Phase 0-6", function () {
       expect(create.accounts[0].relations).to.deep.equal(["config"]);
       expect(create.args).to.deep.equal([]);
       expect(buy.accounts.map(({ name }) => name)).to.deep.equal([
-        "user",
         "round",
         "ticket",
         "prize_vault",
+        "instructions_sysvar",
         "system_program",
       ]);
-      expect(buy.args).to.deep.equal([{ name: "quantity", type: "u32" }]);
+      expect(buy.args).to.deep.equal([
+        { name: "buyer", type: "pubkey" },
+        { name: "quantity", type: "u32" },
+      ]);
+      expect(buy.accounts.map(({ name }) => name)).not.to.include("buyer");
+      expect(buy.accounts[1].pda?.seeds?.[2]).to.deep.equal({
+        kind: "arg",
+        path: "buyer",
+      });
+      expect(buy.accounts[3].address).to.equal(
+        anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY.toBase58()
+      );
+      expect(buy.accounts[4].address).to.equal(systemProgram.toBase58());
+      expect(buy.accounts[4].signer).not.to.equal(true);
+      expect(buy.accounts[4].writable).not.to.equal(true);
+      expect(rawIdl.constants).to.deep.include({
+        name: "TICKET_SPACE",
+        type: "u64",
+        value: String(program.account.ticket.size),
+      });
     });
 
     it("pins the LottoConfig field order", () => {
@@ -421,68 +441,68 @@ describe("lotto Phase 0-6", function () {
         {
           code: 6000,
           name: "InvalidTicketPrice",
-          msg: "TicketPrice 需大于 0",
+          msg: "TicketPrice 必须大于 0",
         },
         {
           code: 6001,
           name: "InvalidTierThresholds",
-          msg: "TierThresholds 需递增且处于 1..256",
+          msg: "TierThresholds 必须严格递增，且每项位于 1..=256",
         },
         {
           code: 6002,
           name: "InvalidTierPoolBps",
-          msg: "TierPoolBPS 总和不能大于 10,000",
+          msg: "TierPoolBPS 总和不能超过 10,000",
         },
         {
           code: 6003,
           name: "UnauthorizedInitializer",
-          msg: "当前 signer 不是 Program upgrade authority，无权初始化 Config",
+          msg: "当前 signer 不是 Program Upgrade Authority，不能初始化 Config",
         },
       ]);
       expect(rawIdl.errors?.slice(4, 9)).to.deep.equal([
         {
           code: 6004,
           name: "ActiveRoundExists",
-          msg: "存在已激活 Round",
+          msg: "当前已有激活中的 Round",
         },
         {
           code: 6005,
           name: "ArithmeticError",
-          msg: "Checked arithmetic operation failed",
+          msg: "算术运算失败",
         },
         {
           code: 6006,
           name: "InvalidTicketQuantity",
-          msg: "Ticket quantity 需大于 0",
+          msg: "Ticket quantity 必须大于 0",
         },
         {
           code: 6007,
           name: "RoundNotSelling",
-          msg: "Round is not in Selling state",
+          msg: "Round 当前不处于 Selling 状态",
         },
-        { code: 6008, name: "SaleClosed", msg: "售票已关闭" },
+        { code: 6008, name: "SaleClosed", msg: "售票窗口已关闭" },
       ]);
       expect(rawIdl.errors?.slice(9, 14)).to.deep.equal([
-        { code: 6009, name: "SaleStillOpen", msg: "当前仍处于销售期" },
+        { code: 6009, name: "SaleStillOpen", msg: "售票窗口仍未结束" },
         {
           code: 6010,
           name: "RandomnessAlreadyReady",
-          msg: "Randomness 状态已就位",
+          msg: "Randomness 已经就绪",
         },
         {
           code: 6011,
           name: "RoundNotRandomnessPending",
-          msg: "Round is not waiting for randomness",
+          msg: "Round 当前不处于 RandomnessPending 状态",
         },
         {
           code: 6012,
           name: "RandomnessNotReady",
-          msg: "Randomness has not been received yet",
+          msg: "Randomness 尚未就绪",
         },
         {
           code: 6013,
           name: "RandomnessBindingMismatch",
-          msg: "Randomness callback binding does not match the round",
+          msg: "Randomness callback binding 与当前 Round 不匹配",
         },
       ]);
     });
@@ -492,17 +512,17 @@ describe("lotto Phase 0-6", function () {
         {
           code: 6014,
           name: "RoundNotRegistering",
-          msg: "Round is not in registration phase",
+          msg: "Round 当前不处于 Registering 状态",
         },
         {
           code: 6015,
           name: "RegistrationClosed",
-          msg: "Registration window is closed",
+          msg: "登记窗口已关闭",
         },
         {
           code: 6016,
           name: "TicketAlreadyRegistered",
-          msg: "Ticket has already been registered",
+          msg: "Ticket 已完成登记，不能重复登记",
         },
       ]);
       expect(rawIdl.errors?.map(({ name }) => name)).not.to.include(
@@ -518,37 +538,64 @@ describe("lotto Phase 0-6", function () {
         {
           code: 6017,
           name: "RegistrationStillOpen",
-          msg: "Registration window is still open",
+          msg: "登记窗口仍未结束",
         },
         {
           code: 6018,
           name: "RoundNotClaiming",
-          msg: "Round is not in Claiming phase",
+          msg: "Round 当前不处于 Claiming 状态",
         },
         {
           code: 6019,
           name: "ClaimClosed",
-          msg: "Claim window has closed",
+          msg: "兑奖窗口已关闭",
         },
         {
           code: 6020,
           name: "TicketNotWinner",
-          msg: "Ticket is not a registered winner",
+          msg: "Ticket 不是已登记的中奖 Ticket",
         },
       ]);
     });
 
-    it("appends only the two reachable Phase 6 domain errors", () => {
-      expect(rawIdl.errors?.slice(21)).to.deep.equal([
+    it("preserves Phase 6 errors and appends the V2 payment errors", () => {
+      expect(rawIdl.errors?.slice(21, 23)).to.deep.equal([
         {
           code: 6021,
           name: "ClaimStillOpen",
-          msg: "Claim window is still open",
+          msg: "兑奖窗口仍未结束",
         },
         {
           code: 6022,
           name: "RoundCleanupStateInvalid",
-          msg: "Round account is neither a valid live Round nor a valid closed Round",
+          msg: "Round account 既不是有效的 live Round，也不是有效的 closed Round",
+        },
+      ]);
+      expect(rawIdl.errors?.slice(23)).to.deep.equal([
+        {
+          code: 6023,
+          name: "InvalidPaymentInstruction",
+          msg: "上一条 instruction 不是有效的购票付款 instruction",
+        },
+        {
+          code: 6024,
+          name: "PaymentSourceMismatch",
+          msg: "付款来源与 buyer 不匹配",
+        },
+        {
+          code: 6025,
+          name: "PaymentDestinationMismatch",
+          msg: "付款目标与 Prize Vault 不匹配",
+        },
+        {
+          code: 6026,
+          name: "PaymentAmountMismatch",
+          msg: "付款金额与当前应付金额不匹配",
+        },
+        {
+          code: 6027,
+          name: "InvalidTicketAccountState",
+          msg: "Ticket account 当前状态无效",
         },
       ]);
     });
@@ -1370,12 +1417,22 @@ describe("lotto Phase 0-6", function () {
     const overflowPrice = new anchor.BN(1).shln(63);
     const phase2Price =
       buyMode === "payment-overflow" ? overflowPrice : new anchor.BN(1);
+    const ticketSpaceConstant = rawIdl.constants?.find(
+      ({ name }) => name === "TICKET_SPACE"
+    );
+    if (ticketSpaceConstant === undefined) {
+      throw new Error("generated IDL is missing TICKET_SPACE");
+    }
+    const ticketSpace = Number(ticketSpaceConstant.value);
     const playerA = anchor.web3.Keypair.generate();
     const playerB = anchor.web3.Keypair.generate();
     const zeroBuyer = anchor.web3.Keypair.generate();
     const maxQuantityBuyer = anchor.web3.Keypair.generate();
     const poorNewBuyer = anchor.web3.Keypair.generate();
     const poorRepeatBuyer = anchor.web3.Keypair.generate();
+    const securityBuyers = Array.from({ length: 20 }, () =>
+      anchor.web3.Keypair.generate()
+    );
     const substituteSystemAccount = anchor.web3.Keypair.generate().publicKey;
     let minimumRent = 0;
     let ticketRent = 0;
@@ -1421,14 +1478,103 @@ describe("lotto Phase 0-6", function () {
       };
     }
 
-    function buyAccounts(user: anchor.web3.PublicKey) {
+    function buyAccounts(buyer: anchor.web3.PublicKey) {
       return {
-        user,
         round: activeRound,
-        ticket: ticketPda(user).ticket,
+        ticket: ticketPda(buyer).ticket,
         prizeVault: activePrizeVault,
+        instructionsSysvar: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
         systemProgram,
       };
+    }
+
+    type BuyAccounts = ReturnType<typeof buyAccounts>;
+
+    async function quotePayment(
+      buyer: anchor.web3.PublicKey,
+      quantity: number
+    ) {
+      const ticket = ticketPda(buyer).ticket;
+      const info = await provider.connection.getAccountInfo(
+        ticket,
+        "confirmed"
+      );
+      const isNew =
+        info === null ||
+        (info.owner.equals(systemProgram) && info.data.length === 0);
+      const rentTopUp = isNew
+        ? Math.max(ticketRent - (info?.lamports ?? 0), 0)
+        : 0;
+      const businessPayment = phase2Price.mul(new anchor.BN(quantity));
+      const expectedPayment = businessPayment.add(new anchor.BN(rentTopUp));
+      if (expectedPayment.gt(new anchor.BN(Number.MAX_SAFE_INTEGER))) {
+        throw new Error("quoted payment does not fit a JavaScript number");
+      }
+      return {
+        businessPayment,
+        expectedPayment: expectedPayment.toNumber(),
+        rentTopUp,
+        ticket,
+      };
+    }
+
+    async function buyInstruction(
+      buyer: anchor.web3.PublicKey,
+      quantity: number,
+      overrides: Partial<BuyAccounts> = {}
+    ) {
+      return program.methods
+        .buyTicketV2(buyer, quantity)
+        .accountsStrict({ ...buyAccounts(buyer), ...overrides })
+        .instruction();
+    }
+
+    function paymentInstruction(
+      source: anchor.web3.PublicKey,
+      destination: anchor.web3.PublicKey,
+      lamports: number
+    ) {
+      return anchor.web3.SystemProgram.transfer({
+        fromPubkey: source,
+        toPubkey: destination,
+        lamports,
+      });
+    }
+
+    async function buyTransaction(
+      buyer: anchor.web3.PublicKey,
+      quantity: number,
+      options: {
+        accounts?: Partial<BuyAccounts>;
+        amount?: number;
+        source?: anchor.web3.PublicKey;
+        destination?: anchor.web3.PublicKey;
+        beforePayment?: anchor.web3.TransactionInstruction[];
+        betweenPaymentAndBuy?: anchor.web3.TransactionInstruction[];
+        payment?: anchor.web3.TransactionInstruction | null;
+      } = {}
+    ) {
+      const quote =
+        options.amount === undefined
+          ? await quotePayment(buyer, quantity)
+          : undefined;
+      const source = options.source ?? buyer;
+      const destination = options.destination ?? activePrizeVault;
+      const amount = options.amount ?? quote!.expectedPayment;
+      const payment =
+        options.payment === undefined
+          ? paymentInstruction(source, destination, amount)
+          : options.payment;
+      const transaction = new anchor.web3.Transaction();
+      if ((options.beforePayment?.length ?? 0) > 0) {
+        transaction.add(...options.beforePayment!);
+      }
+      if (payment !== null) transaction.add(payment);
+      if ((options.betweenPaymentAndBuy?.length ?? 0) > 0) {
+        transaction.add(...options.betweenPaymentAndBuy!);
+      }
+      transaction.add(await buyInstruction(buyer, quantity, options.accounts));
+      return transaction;
     }
 
     async function snapshot(
@@ -1558,7 +1704,8 @@ describe("lotto Phase 0-6", function () {
       user: anchor.web3.Keypair,
       quantity: number,
       code: string,
-      overrides: Partial<ReturnType<typeof buyAccounts>> = {}
+      overrides: Partial<BuyAccounts> = {},
+      amount?: number
     ) {
       const accounts = { ...buyAccounts(user.publicKey), ...overrides };
       const watched = [
@@ -1570,25 +1717,28 @@ describe("lotto Phase 0-6", function () {
         accounts.ticket,
         user.publicKey,
       ];
-      const transaction = await program.methods
-        .buyTicket(quantity)
-        .accountsStrict(accounts)
-        .transaction();
+      const transaction = await buyTransaction(user.publicKey, quantity, {
+        accounts,
+        amount: amount ?? (buyMode === "payment-overflow" ? 1 : undefined),
+      });
       return expectRejectedWithoutChanges(transaction, code, watched, [user]);
     }
 
     async function purchase(
       user: anchor.web3.Keypair,
       quantity: number,
-      previousQuantity: number
+      previousQuantity: number,
+      beforePayment: anchor.web3.TransactionInstruction[] = []
     ) {
       const { ticket, bump } = ticketPda(user.publicKey);
       const ticketBefore = await provider.connection.getAccountInfo(
         ticket,
         "confirmed"
       );
-      expect(ticketBefore === null).to.equal(previousQuantity === 0);
-      const previous = ticketBefore
+      const wasExisting =
+        ticketBefore?.owner.equals(program.programId) ?? false;
+      expect(wasExisting).to.equal(previousQuantity > 0);
+      const previous = wasExisting
         ? await program.account.ticket.fetch(ticket, "confirmed")
         : null;
       const roundBefore = await program.account.round.fetch(
@@ -1603,12 +1753,12 @@ describe("lotto Phase 0-6", function () {
         user.publicKey,
         "confirmed"
       );
-      const payment = phase2Price.mul(new anchor.BN(quantity));
+      const quote = await quotePayment(user.publicKey, quantity);
       const receipt = await submitRecorded(
-        await program.methods
-          .buyTicket(quantity)
-          .accountsStrict(buyAccounts(user.publicKey))
-          .transaction(),
+        await buyTransaction(user.publicKey, quantity, {
+          amount: quote.expectedPayment,
+          beforePayment,
+        }),
         [user]
       );
       expect(receipt.meta!.err, receipt.meta!.logMessages?.join("\n")).to.equal(
@@ -1622,7 +1772,7 @@ describe("lotto Phase 0-6", function () {
       const created = await program.account.ticket.fetch(ticket, "confirmed");
       expect(ticketInfo).not.to.equal(null);
       expect(ticketInfo!.owner.equals(program.programId)).to.equal(true);
-      expect(ticketInfo!.data.length).to.equal(program.account.ticket.size);
+      expect(ticketInfo!.data.length).to.equal(ticketSpace);
       expect(created.user.equals(user.publicKey)).to.equal(true);
       expect(created.roundId.eq(activeRoundId)).to.equal(true);
       expect(created.quantity).to.equal(previousQuantity + quantity);
@@ -1643,23 +1793,25 @@ describe("lotto Phase 0-6", function () {
         "confirmed"
       );
       expect(
-        roundAfter.salesProceeds.sub(roundBefore.salesProceeds).eq(payment)
+        roundAfter.salesProceeds
+          .sub(roundBefore.salesProceeds)
+          .eq(quote.businessPayment)
       ).to.equal(true);
       expect(roundAfter.ticketPrice.eq(phase2Price)).to.equal(true);
       const vaultAfter = await provider.connection.getBalance(
         activePrizeVault,
         "confirmed"
       );
-      expect(new anchor.BN(vaultAfter - vaultBefore).eq(payment)).to.equal(
-        true
-      );
+      expect(
+        new anchor.BN(vaultAfter - vaultBefore).eq(quote.businessPayment)
+      ).to.equal(true);
       const userAfter = await provider.connection.getBalance(
         user.publicKey,
         "confirmed"
       );
       expect(
         new anchor.BN(userBefore - userAfter).eq(
-          payment.add(new anchor.BN(previous === null ? ticketRent : 0))
+          new anchor.BN(quote.expectedPayment)
         )
       ).to.equal(true);
       expect(
@@ -1673,8 +1825,9 @@ describe("lotto Phase 0-6", function () {
       minimumRent = await provider.connection.getMinimumBalanceForRentExemption(
         0
       );
+      expect(ticketSpace).to.equal(program.account.ticket.size);
       ticketRent = await provider.connection.getMinimumBalanceForRentExemption(
-        program.account.ticket.size
+        ticketSpace
       );
       const current = await program.account.lottoConfig.fetch(
         config,
@@ -1729,6 +1882,22 @@ describe("lotto Phase 0-6", function () {
         [],
         { commitment: "confirmed" }
       );
+
+      for (let offset = 0; offset < securityBuyers.length; offset += 6) {
+        await provider.sendAndConfirm(
+          new anchor.web3.Transaction().add(
+            ...securityBuyers.slice(offset, offset + 6).map((buyer) =>
+              anchor.web3.SystemProgram.transfer({
+                fromPubkey: provider.wallet.publicKey,
+                toPubkey: buyer.publicKey,
+                lamports: anchor.web3.LAMPORTS_PER_SOL,
+              })
+            )
+          ),
+          [],
+          { commitment: "confirmed" }
+        );
+      }
     });
 
     it("rejects a non-Config authority with ConstraintHasOne and no partial initialization", async () => {
@@ -1907,7 +2076,72 @@ describe("lotto Phase 0-6", function () {
       );
     });
 
-    describe("buy_ticket", function () {
+    describe("buy_ticket_v2", function () {
+      const [
+        missingPreviousBuyer,
+        nonSystemBuyer,
+        nonTransferBuyer,
+        wrongSourceBuyer,
+        wrongSource,
+        wrongDestinationBuyer,
+        underpayBuyer,
+        overpayBuyer,
+        trailingDataBuyer,
+        extraMetaBuyer,
+        interruptedBuyer,
+        computeBudgetBuyer,
+        prefundedBuyer,
+        invalidOwnerBuyer,
+        corruptDataBuyer,
+        wrongUserBuyer,
+        wrongRoundBuyer,
+        wrongBumpBuyer,
+        staleQuoteBuyer,
+        replayBuyer,
+      ] = securityBuyers;
+
+      function watchedFor(
+        buyer: anchor.web3.PublicKey,
+        ...extra: anchor.web3.PublicKey[]
+      ) {
+        return [
+          activeRound,
+          activePrizeVault,
+          ticketPda(buyer).ticket,
+          buyer,
+          ...extra,
+        ];
+      }
+
+      async function setTicketFixture(
+        buyer: anchor.web3.PublicKey,
+        overrides: Partial<{
+          user: anchor.web3.PublicKey;
+          roundId: anchor.BN;
+          quantity: number;
+          outcome: { unregistered: Record<string, never> };
+          bump: number;
+        }> = {}
+      ) {
+        const { ticket, bump } = ticketPda(buyer);
+        const encoded = await program.coder.accounts.encode("ticket", {
+          user: buyer,
+          roundId: activeRoundId,
+          quantity: 1,
+          outcome: { unregistered: {} },
+          bump,
+          ...overrides,
+        } as never);
+        const data = Buffer.alloc(ticketSpace);
+        encoded.copy(data);
+        await setAccount(ticket, {
+          lamports: ticketRent,
+          data,
+          owner: program.programId,
+          executable: false,
+        });
+      }
+
       before(async () => {
         const current = await program.account.lottoConfig.fetch(config);
         expect(current.activeRoundId?.eq(activeRoundId)).to.equal(true);
@@ -1916,7 +2150,7 @@ describe("lotto Phase 0-6", function () {
         expect((await chainTimestamp()).lt(saleDeadline)).to.equal(true);
       });
 
-      it("rejects zero quantity and rolls back init_if_needed rent", async () => {
+      it("rejects zero quantity and rolls back the preceding payment", async () => {
         expect(
           await snapshot([ticketPda(zeroBuyer.publicKey).ticket])
         ).to.deep.equal([null]);
@@ -1986,13 +2220,177 @@ describe("lotto Phase 0-6", function () {
             playerA.publicKey,
           ];
           const before = await snapshot(watched);
-          const receipt = await rejectBuy(playerA, 2, "ArithmeticError");
+          const receipt = await rejectBuy(playerA, 2, "ArithmeticError", {}, 1);
           expect(receipt.meta!.logMessages).to.include(
             `Program ${systemProgram.toBase58()} success`
           );
           expect(await snapshot(watched)).to.deep.equal(before);
         });
       } else {
+        it("rejects buyTicketV2 without a previous instruction", async () => {
+          await expectRejectedWithoutChanges(
+            new anchor.web3.Transaction().add(
+              await buyInstruction(missingPreviousBuyer.publicKey, 1)
+            ),
+            "InvalidPaymentInstruction",
+            watchedFor(missingPreviousBuyer.publicKey)
+          );
+        });
+
+        it("rejects a previous instruction from a non-System program", async () => {
+          const transaction = new anchor.web3.Transaction().add(
+            anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+              units: 300_000,
+            }),
+            await buyInstruction(nonSystemBuyer.publicKey, 1)
+          );
+          await expectRejectedWithoutChanges(
+            transaction,
+            "InvalidPaymentInstruction",
+            watchedFor(nonSystemBuyer.publicKey)
+          );
+        });
+
+        it("rejects a previous System instruction that is not Transfer", async () => {
+          const allocate = anchor.web3.SystemProgram.allocate({
+            accountPubkey: nonTransferBuyer.publicKey,
+            space: 0,
+          });
+          const transaction = new anchor.web3.Transaction().add(
+            allocate,
+            await buyInstruction(nonTransferBuyer.publicKey, 1)
+          );
+          await expectRejectedWithoutChanges(
+            transaction,
+            "InvalidPaymentInstruction",
+            watchedFor(nonTransferBuyer.publicKey),
+            [nonTransferBuyer]
+          );
+        });
+
+        it("rejects a payment source that differs from buyer", async () => {
+          const quote = await quotePayment(wrongSourceBuyer.publicKey, 1);
+          await expectRejectedWithoutChanges(
+            await buyTransaction(wrongSourceBuyer.publicKey, 1, {
+              amount: quote.expectedPayment,
+              source: wrongSource.publicKey,
+            }),
+            "PaymentSourceMismatch",
+            watchedFor(wrongSourceBuyer.publicKey, wrongSource.publicKey),
+            [wrongSource]
+          );
+        });
+
+        it("rejects a payment destination that is not the canonical Prize Vault", async () => {
+          const quote = await quotePayment(wrongDestinationBuyer.publicKey, 1);
+          await expectRejectedWithoutChanges(
+            await buyTransaction(wrongDestinationBuyer.publicKey, 1, {
+              amount: quote.expectedPayment,
+              destination: substituteSystemAccount,
+            }),
+            "PaymentDestinationMismatch",
+            watchedFor(
+              wrongDestinationBuyer.publicKey,
+              substituteSystemAccount
+            ),
+            [wrongDestinationBuyer]
+          );
+        });
+
+        for (const [label, buyer, delta] of [
+          ["underpayment", underpayBuyer, -1],
+          ["overpayment", overpayBuyer, 1],
+        ] as const) {
+          it(`rejects ${label} and rolls back the transfer`, async () => {
+            const quote = await quotePayment(buyer.publicKey, 1);
+            await expectRejectedWithoutChanges(
+              await buyTransaction(buyer.publicKey, 1, {
+                amount: quote.expectedPayment + delta,
+              }),
+              "PaymentAmountMismatch",
+              watchedFor(buyer.publicKey),
+              [buyer]
+            );
+          });
+        }
+
+        it("rejects canonical Transfer data with trailing bytes", async () => {
+          const quote = await quotePayment(trailingDataBuyer.publicKey, 1);
+          const canonical = paymentInstruction(
+            trailingDataBuyer.publicKey,
+            activePrizeVault,
+            quote.expectedPayment
+          );
+          const malformed = new anchor.web3.TransactionInstruction({
+            programId: canonical.programId,
+            keys: canonical.keys,
+            data: Buffer.concat([canonical.data, Buffer.from([0])]),
+          });
+          await expectRejectedWithoutChanges(
+            await buyTransaction(trailingDataBuyer.publicKey, 1, {
+              payment: malformed,
+            }),
+            "InvalidPaymentInstruction",
+            watchedFor(trailingDataBuyer.publicKey),
+            [trailingDataBuyer]
+          );
+        });
+
+        it("rejects a Transfer carrying a third account meta", async () => {
+          const quote = await quotePayment(extraMetaBuyer.publicKey, 1);
+          const canonical = paymentInstruction(
+            extraMetaBuyer.publicKey,
+            activePrizeVault,
+            quote.expectedPayment
+          );
+          const withExtraMeta = new anchor.web3.TransactionInstruction({
+            programId: canonical.programId,
+            keys: [
+              ...canonical.keys,
+              {
+                pubkey: substituteSystemAccount,
+                isSigner: false,
+                isWritable: false,
+              },
+            ],
+            data: canonical.data,
+          });
+          await expectRejectedWithoutChanges(
+            await buyTransaction(extraMetaBuyer.publicKey, 1, {
+              payment: withExtraMeta,
+            }),
+            "InvalidPaymentInstruction",
+            watchedFor(extraMetaBuyer.publicKey),
+            [extraMetaBuyer]
+          );
+        });
+
+        it("only accepts the immediately previous top-level instruction", async () => {
+          const quote = await quotePayment(interruptedBuyer.publicKey, 1);
+          await expectRejectedWithoutChanges(
+            await buyTransaction(interruptedBuyer.publicKey, 1, {
+              amount: quote.expectedPayment,
+              betweenPaymentAndBuy: [
+                anchor.web3.SystemProgram.allocate({
+                  accountPubkey: interruptedBuyer.publicKey,
+                  space: 0,
+                }),
+              ],
+            }),
+            "InvalidPaymentInstruction",
+            watchedFor(interruptedBuyer.publicKey),
+            [interruptedBuyer]
+          );
+        });
+
+        it("allows ComputeBudget instructions before the payment transfer", async () => {
+          await purchase(computeBudgetBuyer, 1, 0, [
+            anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+              units: 300_000,
+            }),
+          ]);
+        });
+
         it("keeps the Round snapshot after Config repricing and charges P1", async () => {
           const configBefore = await program.account.lottoConfig.fetch(config);
           const roundBefore = await snapshot([
@@ -2022,7 +2420,41 @@ describe("lotto Phase 0-6", function () {
         });
 
         it("reuses the canonical Ticket and charges only the repeated delta", async () => {
+          if (
+            (await provider.connection.getAccountInfo(
+              ticketPda(playerA.publicKey).ticket,
+              "confirmed"
+            )) === null
+          ) {
+            await setTicketFixture(playerA.publicKey, { quantity: 3 });
+          }
           await purchase(playerA, 2, 3);
+        });
+
+        it("initializes a third-party-prefunded System-owned Ticket PDA", async () => {
+          const ticket = ticketPda(prefundedBuyer.publicKey).ticket;
+          const prefundedLamports = ticketRent;
+          await provider.sendAndConfirm(
+            new anchor.web3.Transaction().add(
+              paymentInstruction(
+                provider.wallet.publicKey,
+                ticket,
+                prefundedLamports
+              )
+            ),
+            [],
+            { commitment: "confirmed" }
+          );
+          const before = await provider.connection.getAccountInfo(
+            ticket,
+            "confirmed"
+          );
+          expect(before!.owner.equals(systemProgram)).to.equal(true);
+          expect(before!.data.length).to.equal(0);
+          expect(before!.lamports).to.equal(prefundedLamports);
+          const quote = await quotePayment(prefundedBuyer.publicKey, 1);
+          expect(quote.rentTopUp).to.equal(0);
+          await purchase(prefundedBuyer, 1, 0);
         });
 
         it("keeps Player A and B Tickets isolated while aggregating one ledger", async () => {
@@ -2034,7 +2466,8 @@ describe("lotto Phase 0-6", function () {
           const playerABefore = await snapshot([
             ticketPda(playerA.publicKey).ticket,
           ]);
-          await purchase(playerB, 4, 0);
+          await setTicketFixture(playerB.publicKey, { quantity: 1 });
+          await purchase(playerB, 4, 1);
           expect(
             await snapshot([ticketPda(playerA.publicKey).ticket])
           ).to.deep.equal(playerABefore);
@@ -2042,7 +2475,9 @@ describe("lotto Phase 0-6", function () {
 
         it("checks u32 Ticket quantity addition and rolls back overflow", async () => {
           const maxQuantity = 0xffff_ffff;
-          await purchase(maxQuantityBuyer, maxQuantity, 0);
+          await setTicketFixture(maxQuantityBuyer.publicKey, {
+            quantity: maxQuantity,
+          });
           const watched = [
             activeRound,
             activePrizeVault,
@@ -2054,6 +2489,89 @@ describe("lotto Phase 0-6", function () {
           expect(await snapshot(watched)).to.deep.equal(before);
         });
 
+        it("rejects a canonical Ticket PDA owned by another program", async () => {
+          const ticket = ticketPda(invalidOwnerBuyer.publicKey).ticket;
+          await setAccount(ticket, {
+            lamports: ticketRent,
+            data: Buffer.alloc(0),
+            owner: substituteSystemAccount,
+            executable: false,
+          });
+          await rejectBuy(
+            invalidOwnerBuyer,
+            1,
+            "InvalidTicketAccountState",
+            {},
+            phase2Price.toNumber()
+          );
+        });
+
+        it("rejects Lotto-owned Ticket data with an invalid discriminator", async () => {
+          const ticket = ticketPda(corruptDataBuyer.publicKey).ticket;
+          await setAccount(ticket, {
+            lamports: ticketRent,
+            data: Buffer.alloc(ticketSpace),
+            owner: program.programId,
+            executable: false,
+          });
+          await rejectBuy(corruptDataBuyer, 1, "InvalidTicketAccountState");
+        });
+
+        for (const [label, buyer, fixture] of [
+          ["user", wrongUserBuyer, { user: playerA.publicKey }],
+          [
+            "round_id",
+            wrongRoundBuyer,
+            { roundId: activeRoundId.add(new anchor.BN(1)) },
+          ],
+          [
+            "bump",
+            wrongBumpBuyer,
+            { bump: (ticketPda(wrongBumpBuyer.publicKey).bump + 1) % 256 },
+          ],
+        ] as const) {
+          it(`rejects an existing Ticket with a mismatched inner ${label}`, async () => {
+            await setTicketFixture(buyer.publicKey, fixture);
+            await rejectBuy(buyer, 1, "InvalidTicketAccountState");
+          });
+        }
+
+        it("rejects a stale New-Ticket quote and rolls back its transfer", async () => {
+          const staleQuote = await quotePayment(staleQuoteBuyer.publicKey, 1);
+          const staleTransaction = await buyTransaction(
+            staleQuoteBuyer.publicKey,
+            1,
+            { amount: staleQuote.expectedPayment }
+          );
+          await purchase(staleQuoteBuyer, 1, 0);
+          await expectRejectedWithoutChanges(
+            staleTransaction,
+            "PaymentAmountMismatch",
+            watchedFor(staleQuoteBuyer.publicKey),
+            [staleQuoteBuyer]
+          );
+        });
+
+        it("cannot consume one valid transfer with two buyTicketV2 calls", async () => {
+          const quote = await quotePayment(replayBuyer.publicKey, 1);
+          const buy = await buyInstruction(replayBuyer.publicKey, 1);
+          const transaction = new anchor.web3.Transaction().add(
+            paymentInstruction(
+              replayBuyer.publicKey,
+              activePrizeVault,
+              quote.expectedPayment
+            ),
+            buy,
+            buy
+          );
+          await expectRejectedWithoutChanges(
+            transaction,
+            "InvalidPaymentInstruction",
+            watchedFor(replayBuyer.publicKey),
+            [replayBuyer]
+          );
+        });
+
         it("rolls back a newly initialized Ticket when the buyer cannot pay principal", async () => {
           const watched = [
             activeRound,
@@ -2063,10 +2581,7 @@ describe("lotto Phase 0-6", function () {
           ];
           const before = await snapshot(watched);
           const receipt = await submitRecorded(
-            await program.methods
-              .buyTicket(1)
-              .accountsStrict(buyAccounts(poorNewBuyer.publicKey))
-              .transaction(),
+            await buyTransaction(poorNewBuyer.publicKey, 1),
             [poorNewBuyer]
           );
           expect(receipt.meta!.err).not.to.equal(null);
@@ -2079,7 +2594,13 @@ describe("lotto Phase 0-6", function () {
         });
 
         it("rolls back repeat quantity and ledger when the buyer cannot pay the delta", async () => {
-          await purchase(poorRepeatBuyer, 1, 0);
+          await setTicketFixture(poorRepeatBuyer.publicKey, { quantity: 1 });
+          await setAccount(poorRepeatBuyer.publicKey, {
+            lamports: 1,
+            data: Buffer.alloc(0),
+            owner: systemProgram,
+            executable: false,
+          });
           const watched = [
             activeRound,
             activePrizeVault,
@@ -2088,10 +2609,7 @@ describe("lotto Phase 0-6", function () {
           ];
           const before = await snapshot(watched);
           const receipt = await submitRecorded(
-            await program.methods
-              .buyTicket(2)
-              .accountsStrict(buyAccounts(poorRepeatBuyer.publicKey))
-              .transaction(),
+            await buyTransaction(poorRepeatBuyer.publicKey, 2),
             [poorRepeatBuyer]
           );
           expect(receipt.meta!.err).not.to.equal(null);
