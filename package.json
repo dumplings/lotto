@@ -8,7 +8,9 @@
     "test-fast:zero": "CREATE_ROUND_ROLLOVER=zero anchor test -- --features test-fast",
     "test-fast:payment-overflow": "PHASE2_BUY_MODE=payment-overflow anchor test -- --features test-fast",
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
-    "lint": "prettier \"**/*{.js,.ts}\" --check"
+    "lint": "prettier \"**/*{.js,.ts}\" --check",
+
+    "devnet": "node scripts/devnet.ts"
   },
   "type": "module",
   "dependencies": {
