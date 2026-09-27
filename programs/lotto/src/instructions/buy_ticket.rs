@@ -41,6 +41,9 @@ pub struct BuyTicket<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[deprecated(
+    note = "accounts权限设计有缺陷，导致需要user提供过大的授权，所以做了buy_ticket_v2的改版，当前方法不再继续使用"
+)]
 pub fn handle_buy_ticket(ctx: Context<BuyTicket>, quantity: u32) -> Result<()> {
     require!(quantity > 0, LottoError::InvalidTicketQuantity);
     let round = &mut ctx.accounts.round;

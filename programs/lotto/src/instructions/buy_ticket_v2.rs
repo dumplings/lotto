@@ -66,9 +66,7 @@ enum TicketAccountKind {
 }
 
 pub fn handle_buy_ticket_v2(ctx: Context<BuyTicketV2>, buyer: Pubkey, quantity: u32) -> Result<()> {
-    // Payment proof:
-    // the immediately preceding top-level instruction must be a canonical
-    // SystemProgram::transfer from buyer to this Round's Prize Vault.
+    // 通过校验首个instruction信息，取出已转账金额
     let paid_lamports = validate_payment_instruction(
         &ctx.accounts.instructions_sysvar,
         buyer,
@@ -98,6 +96,7 @@ pub fn handle_buy_ticket_v2(ctx: Context<BuyTicketV2>, buyer: Pubkey, quantity: 
         .ok_or(LottoError::ArithmeticError)?;
 
     let rent_top_up = match ticket_kind {
+        // 新ticket要判断是否需要有额外的rent补充
         TicketAccountKind::New => {
             let rent_minimum = Rent::get()?.minimum_balance(TICKET_SPACE as usize);
             rent_minimum.saturating_sub(ticket_info.lamports())
@@ -167,6 +166,7 @@ fn validate_payment_instruction(
         LottoError::InvalidPaymentInstruction,
     );
 
+    // 反序列化拿到指令详细
     let system_instruction: SystemInstruction = bincode::deserialize(&previous_instruction.data)
         .map_err(|_| LottoError::InvalidPaymentInstruction)?;
 
@@ -175,8 +175,7 @@ fn validate_payment_instruction(
         _ => return err!(LottoError::InvalidPaymentInstruction),
     };
 
-    // bincode::deserialize may accept valid data followed by trailing bytes.
-    // Re-serialize the decoded Transfer and require exact byte equality.
+    // 再序列化比较instruction的原始字节信息是否没有脏信息
     let canonical_data = bincode::serialize(&SystemInstruction::Transfer { lamports })
         .map_err(|_| LottoError::InvalidPaymentInstruction)?;
 
